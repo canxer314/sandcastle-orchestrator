@@ -104,7 +104,7 @@ const mcpServices = [{
 
 容器外 MCP 服务不继承只读容器隔离；服务及管理员落实目标目录、网络、身份与副作用限制，必要时显式配置环境网络。角色须区分业务结果、故障和未知，日志引用不可读时报告不可用，不把 URI 当已读证据。CLI exit marker 仅证明 Agent CLI 结束，不能证明 MCP 长任务停止。超时/断连后的外部结果及停止状态仍未知；取消只沿用 #19 协作请求，不加统一远端取消、自动恢复、重试或补偿。原服务重试和副作用幂等限制必须在 `capabilities.retry` 写明，人工 retry 仍先核对外部结果。
 
-验证：`tests/roles.test.ts` 经真实 CLI/socket、Sandcastle `claudeCode` 的真实 builder/parser、受控 CLI harness 和真实 stdio MCP `initialize → tools/list → tools/call`，验证反馈、不可读日志引用、不可用服务、运行时工具缺失、可信绑定不匹配与必需能力缺失。未知结果用例让受控服务实际收到 `tools/call` 后关闭 stdio，harness 按调用派发阶段将断连反馈为 `business.outcome: 'unknown'`、`remoteStopped: null`；CLI 正常结束仍为 completed，不混淆业务未知与进程生命周期未知。原 missing-exit 用例独立验证退出证据缺失时 attempt unknown；凭据未出现在 show/logs。harness 不是实际 Claude Code CLI，不调用模型、不运行真实容器、不外部写入。已核对安装 CLI 的原生 MCP flags；真实 Claude Code/模型发现与调用、HTTP/SSE、实际 Docker 网络/挂载和真实第三方服务访问仍未验收，不把受控结果称为真实模型验收。
+验证：`tests/roles.test.ts` 经真实 CLI/socket、Sandcastle `claudeCode` 的真实 builder/parser、受控 CLI harness 和真实 stdio MCP `initialize → tools/list → tools/call`，验证反馈、不可读日志引用、不可用服务、运行时工具缺失、可信绑定不匹配与必需能力缺失。未知结果用例让受控服务实际收到 `tools/call` 后关闭 stdio，harness 按调用派发阶段将断连反馈为 `business.outcome: 'unknown'`、`remoteStopped: null`；CLI 正常结束仍为 completed，不混淆业务未知与进程生命周期未知。原 missing-exit 用例独立验证退出证据缺失时 attempt unknown；凭据未出现在 show/logs。harness 不是实际 Claude Code CLI，不调用模型、不运行真实容器、不外部写入。2026-10-11 已在授权环境完成真实 Claude CLI → CC-Switch → Codex OAuth 的只读 stdio MCP red/green，独立服务调用记录与模型反馈吻合，Docker 只读配置挂载已核实，详见[真实验收记录](docs/issue-23-real-acceptance.md)。默认测试不调用模型；显式验收脚本及未复跑的新增断言见该记录。HTTP/SSE、真实第三方服务、其他 provider 和真实远端取消/重试仍未验收。
 
 ## 取消与人工恢复
 
