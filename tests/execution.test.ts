@@ -5,6 +5,7 @@ import { join, resolve } from 'node:path';
 import { once } from 'node:events';
 import { afterEach, expect, test } from 'vitest';
 import { call } from '../src/control.js';
+const realDockerTest = process.env.ORCHESTRATOR_REAL_DOCKER === '1' ? test : test.skip;
 const root = resolve(import.meta.dirname, '..');
 const dirs: string[] = [];
 const children: ChildProcess[] = [];
@@ -58,7 +59,7 @@ afterEach(async()=>{
   await Promise.all(children.splice(0).map(async c=>{if(c.exitCode===null&&c.signalCode===null){const exit=once(c,'exit');c.kill('SIGTERM');await exit}}));
   await Promise.all(dirs.splice(0).map(dir=>rm(dir,{recursive:true,force:true})));
 });
-test('fixed SHA script failure is completed business result with CLI-readable logs and artifacts',async()=>{
+realDockerTest('fixed SHA script failure is completed business result with CLI-readable logs and artifacts',async()=>{
   const f=await fixture(`const result=await ctx.exec(['sh','/workspace/test.sh']);return {business:{passed:result.exitCode===0},artifacts:['result.txt']}`);
   const receipt=await submit(f);
   const detail=await finished(f.socket,receipt.executionId);
@@ -123,7 +124,7 @@ test('second sequential command resets log completeness until confirmed end',asy
   expect((await call(f.socket,{command:'logs',id:receipt.executionId}) as any).complete).toBe(true);
 },20000);
 
-test('unawaited execution stays unknown and late output cannot overwrite its state',async()=>{
+realDockerTest('unawaited execution stays unknown and late output cannot overwrite its state',async()=>{
   const f=await fixture(`void ctx.exec(['sh','/workspace/test.sh']);return {business:'premature'}`,'sleep 1\necho ended\n');
   const receipt=await submit(f);let detail=await finished(f.socket,receipt.executionId);
   expect(detail.execution.status).toBe('unknown');expect(detail.attempts[0].business).toBeUndefined();
@@ -131,13 +132,13 @@ test('unawaited execution stays unknown and late output cannot overwrite its sta
   expect(detail.execution.status).toBe('unknown');
 },20000);
 
-test.each(['undefined','()=>{}',"Symbol('omitted')"])('business value %s omitted by JSON is explicit contract error',async value=>{
+realDockerTest.each(['undefined','()=>{}',"Symbol('omitted')"])('business value %s omitted by JSON is explicit contract error',async value=>{
   const f=await fixture(`await ctx.exec(['sh','/workspace/test.sh']);return {business:${value}}`);
   const receipt=await submit(f);const detail=await finished(f.socket,receipt.executionId);
   expect(detail.execution.status).toBe('completed');expect(detail.attempts[0].contract).toBe('error');
 },20000);
 
-test('entrypoint contract errors do not erase normal script completion',async()=>{
+realDockerTest('entrypoint contract errors do not erase normal script completion',async()=>{
   const f=await fixture(`await ctx.exec(['sh','/workspace/test.sh']);return 'not-the-contract'`);
   const receipt=await submit(f);const detail=await finished(f.socket,receipt.executionId);
   expect(detail.execution.status).toBe('completed');
@@ -145,7 +146,7 @@ test('entrypoint contract errors do not erase normal script completion',async()=
   expect(detail.attempts[0].business).toBeUndefined();
 },20000);
 
-test('finish save failure remains unresolved in current service and after restart',async()=>{
+realDockerTest('finish save failure remains unresolved in current service and after restart',async()=>{
   const f=await fixture(`await ctx.exec(['sh','/workspace/test.sh']);return {business:{passed:false}}`);
   const { DatabaseSync }=await import('node:sqlite');
   const db=new DatabaseSync(join(f.data,'records.sqlite'));
@@ -174,13 +175,13 @@ test('required attempt save failure prevents environment start',async()=>{
   db.close();
 },20000);
 
-test.each([125,126,127])('script exit %i is real business completion, not Docker launch failure',async code=>{
+realDockerTest.each([125,126,127])('script exit %i is real business completion, not Docker launch failure',async code=>{
   const f=await fixture(`const result=await ctx.exec(['sh','/workspace/test.sh']);return {business:{exit:result.exitCode}}`,`exit ${code}\n`);
   const receipt=await submit(f);const detail=await finished(f.socket,receipt.executionId);
   expect(detail.execution.status).toBe('completed');expect(detail.attempts[0].business.exit).toBe(code);
 },20000);
 
-test('Docker launch failure never runs the script on the host',async()=>{
+realDockerTest('Docker launch failure never runs the script on the host',async()=>{
   const f=await fixture(`await ctx.exec(['missing-command']);return {business:'not reached'}`);
   const receipt=await submit(f);const detail=await finished(f.socket,receipt.executionId);
   expect(detail.execution.status).toBe('start_failed');
@@ -188,7 +189,7 @@ test('Docker launch failure never runs the script on the host',async()=>{
   expect(detail.attempts[0].error).toContain('Docker launch/entrypoint failed');
 },20000);
 
-test('control crash preserves unresolved attempt and never restarts the running script',async()=>{
+realDockerTest('control crash preserves unresolved attempt and never restarts the running script',async()=>{
   const f=await fixture(`await ctx.exec(['sh','/workspace/test.sh']);return {business:'done'}`,'echo started\nsleep 2\necho ended\n');
   const receipt=await submit(f);
   let detail:any;
@@ -226,7 +227,7 @@ test('snapshot rejects tracked symlinks without running target scripts',async()=
   expect(detail.execution.status).toBe('start_failed');expect(detail.attempts[0].error).toContain('symlinks or submodules');
 },20000);
 
-test('large live logs remain readable with explicit tail truncation',async()=>{
+realDockerTest('large live logs remain readable with explicit tail truncation',async()=>{
   const f=await fixture(`const result=await ctx.exec(['sh','/workspace/test.sh']);return {business:{tail:result.stdout.length}}`,'head -c 100000 /dev/zero | tr "\\000" x\n');
   const receipt=await submit(f);const detail=await finished(f.socket,receipt.executionId);
   expect(detail.execution.status).toBe('completed');expect(detail.attempts[0].business.tail).toBeLessThanOrEqual(65536);
@@ -240,7 +241,7 @@ test('incomplete execution configuration fails startup rather than silently queu
   await expect(start(data,config)).rejects.toThrow('Execution capability requires Docker environment');
 },20000);
 
-test('unknown attempts are included by status filter after restart',async()=>{
+realDockerTest('unknown attempts are included by status filter after restart',async()=>{
   const f=await fixture(`await ctx.exec(['sh','/workspace/test.sh']);return {business:'done'}`);
   const { DatabaseSync }=await import('node:sqlite');const db=new DatabaseSync(join(f.data,'records.sqlite'));
   db.exec("CREATE TRIGGER no_end BEFORE UPDATE ON attempts WHEN NEW.run_state = 'completed' OR NEW.run_state = 'unknown' BEGIN SELECT RAISE(FAIL, 'blocked'); END;");
@@ -251,28 +252,28 @@ test('unknown attempts are included by status filter after restart',async()=>{
   expect(listed.map((x:any)=>x.execution.id)).toContain(receipt.executionId);
 },20000);
 
-test('capability parse failure after confirmed script end is completed contract error',async()=>{
+realDockerTest('capability parse failure after confirmed script end is completed contract error',async()=>{
   const f=await fixture(`await ctx.exec(['sh','/workspace/test.sh']);throw Error('cannot parse result')`);
   const receipt=await submit(f);const detail=await finished(f.socket,receipt.executionId);
   expect(detail.execution.status).toBe('completed');expect(detail.attempts[0].contract).toBe('error');
   expect(detail.attempts[0].contractError).toContain('cannot parse result');
 },20000);
 
-test('artifact symlink is a contract error and never exposes a container or host file',async()=>{
+realDockerTest('artifact symlink is a contract error and never exposes a container or host file',async()=>{
   const f=await fixture(`await ctx.exec(['sh','/workspace/test.sh']);return {business:'done',artifacts:['secret.txt']}`,'ln -s /etc/passwd /artifacts/secret.txt\necho done\n');
   const receipt=await submit(f);const detail=await finished(f.socket,receipt.executionId);
   expect(detail.execution.status).toBe('completed');expect(detail.attempts[0].contract).toBe('error');
   await expect(call(f.socket,{command:'artifact',id:receipt.executionId,name:'secret.txt'})).rejects.toThrow('Artifact not registered');
 },20000);
 
-test('real Docker boundary has no host credentials, network, Git remote or outside mount',async()=>{
+realDockerTest('real Docker boundary has no host credentials, network, Git remote or outside mount',async()=>{
   const f=await fixture(`const result=await ctx.exec(['sh','/workspace/test.sh']);return {business:result.stdout}`,
     'test ! -e /var/run/docker.sock || exit 3\ntest ! -e /workspace/.git || exit 4\ntest -z "$ORCHESTRATOR_SECRET" || exit 5\nnode -e "if(require(\'os\').networkInterfaces().eth0)process.exit(6)" || exit 6\necho isolated\n');
   const receipt=await submit(f);const detail=await finished(f.socket,receipt.executionId);
   expect(detail.execution.status).toBe('completed');expect(detail.attempts[0].exitCode).toBe(0);expect(detail.attempts[0].business).toBe('isolated\n');
 },20000);
 
-test('parallel submissions get distinct workspaces and have no orchestrator concurrency gate',async()=>{
+realDockerTest('parallel submissions get distinct workspaces and have no orchestrator concurrency gate',async()=>{
   const f=await fixture(`const result=await ctx.exec(['sh','/workspace/test.sh']);return {business:result.stdout}`,'echo private > private.txt\nsleep 1\necho finished\n');
   const [first,second]=await Promise.all([submit(f),submit(f)]);
   const [a,b]=await Promise.all([finished(f.socket,first.executionId),finished(f.socket,second.executionId)]);
@@ -366,7 +367,7 @@ test('failed cooperative stop is completed cancellation when the live command la
   await expect.poll(async()=>(await call(f.socket,{command:'show',id:receipt.executionId}) as any).execution.status).toBe('cancelled');
 },20000);
 
-test('retry keeps old attempt artifacts accessible through the public CLI',async()=>{
+realDockerTest('retry keeps old attempt artifacts accessible through the public CLI',async()=>{
   const f=await fixture(`await ctx.exec(['sh','/workspace/test.sh']);return {business:'done',artifacts:['result.txt']}`);
   const receipt=await submit(f);const old=await finished(f.socket,receipt.executionId);
   await cli(['retry',receipt.executionId,'--socket',f.socket,'--source','operator','--handling','checked','--reason','repeat','--external-results','no writes']);
@@ -500,7 +501,7 @@ test('queued cancellation is persisted and not consumed after restart',async()=>
   expect(detail.execution.status).toBe('cancelled');expect(detail.attempts).toEqual([]);
 },20000);
 
-test('keyed socket concurrency and CLI retries never create another attempt', async () => {
+realDockerTest('keyed socket concurrency and CLI retries never create another attempt', async () => {
   const f = await fixture(`await ctx.exec(['sh','/workspace/test.sh']);return {business:'done'}`, 'sleep 1\necho done\n');
   const submission = { repo:'alpha', capability:'test-commit', input:f.sha, source:'timer', deduplicationKey:'slot' };
   const args = ['submit','--socket',f.socket,'--repo','alpha','--capability','test-commit','--input',JSON.stringify(f.sha),'--source','timer','--deduplication-key','slot'];

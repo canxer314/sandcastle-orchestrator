@@ -1,5 +1,6 @@
 import { pathToFileURL } from 'node:url';
 import { resolve } from 'node:path';
+import type { AgentProvider } from '@ai-hero/sandcastle';
 
 export async function loadConfiguration(path: string): Promise<Configuration> {
   const config = (await import(pathToFileURL(resolve(path)).href)).default;
@@ -26,7 +27,38 @@ export async function loadConfiguration(path: string): Promise<Configuration> {
       if (typeof environment.docker.image !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9._/@:-]*$/.test(environment.docker.image)) throw Error(`Invalid Docker image: ${environment.id}`);
     }
   }
+  if (config.roles !== undefined && !Array.isArray(config.roles)) throw Error('Invalid roles');
+  for (const role of config.roles ?? []) {
+    if (!role || typeof role.id !== 'string' || !role.id || config.capabilities.some((c: {id:string}) => c.id === role.id)) throw Error('Invalid or conflicting role id');
+    if ((config.roles as Role[]).filter(r => r.id === role.id).length !== 1) throw Error(`Duplicate role id: ${role.id}`);
+    if (typeof role.description !== 'string' || !role.description || typeof role.validate !== 'function' || typeof role.buildPrompt !== 'function' || typeof role.validateReport !== 'function' || !Array.isArray(role.skills) || !Array.isArray(role.tools)) throw Error(`Invalid role definition: ${role.id}`);
+    if(role.skills.some((s:unknown)=>typeof s!=='string') || role.tools.some((t:unknown)=>typeof t!=='string' || !config.tools?.some((tool:{id:string})=>tool.id===t)))throw Error(`Invalid role skills or tool references: ${role.id}`);
+  }
+  for (const [key,label] of [['providers','provider'],['roleBindings','role binding']] as const) if(config[key]!==undefined && !Array.isArray(config[key]))throw Error(`Invalid ${label} list`);
+  const providerIds=new Set<string>();
+  for(const provider of config.providers ?? []) {
+    if(!provider || typeof provider.id!=='string' || !provider.id || providerIds.has(provider.id) || typeof provider.agent?.buildPrintCommand!=='function' || typeof provider.agent?.parseStreamLine!=='function')throw Error('Invalid or duplicate provider');
+    providerIds.add(provider.id);
+  }
+  const bindings=new Set<string>();
+  for(const binding of config.roleBindings ?? []) {
+    const environment=config.environments.find((e:{id:string})=>e.id===binding.environment);
+    if(!config.roles?.some((r:Role)=>r.id===binding.role) || !providerIds.has(binding.provider) || bindings.has(binding.role) || typeof binding.commit!=='function' || !environment?.docker)throw Error('Invalid role binding');
+    if(!/^[a-zA-Z0-9][a-zA-Z0-9._/@:-]*$/.test(environment.docker.image))throw Error('Invalid role Docker image');
+    if(environment.docker.network==='host')throw Error('Role Docker host network is not permitted');
+    bindings.add(binding.role);
+  }
   return config;
+}
+
+export interface Role {
+  id: string;
+  description: string;
+  validate(input: unknown): unknown;
+  buildPrompt(context: {input: unknown; repo: string; actualSha: string}): string | Promise<string>;
+  skills: string[];
+  tools: string[];
+  validateReport(output: string): unknown;
 }
 
 export interface ExecutionContext {
@@ -38,8 +70,12 @@ export interface ExecutionContext {
 
 export interface Configuration {
   version: string;
+  roles?: Role[];
+  tools?: {id:string; description:string}[];
+  providers?: {id: string; agent: AgentProvider}[];
+  roleBindings?: {role: string; provider: string; environment: string; commit(input: unknown): string}[];
   repos: { id: string; location: string }[];
-  environments: { id: string; docker?: { image: string } }[];
+  environments: { id: string; docker?: { image: string; binary?: string; network?: string; env?: Record<string,string> } }[];
   capabilities: {
     id: string;
     environment: string;

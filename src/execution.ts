@@ -8,14 +8,14 @@ import type { Records } from './records.js';
 const execFileAsync = promisify(execFile);
 
 // No shell, global/system Git configuration, credentials or checkout hooks.
-async function git(repo: string, args: string[], binary = false) {
+export async function git(repo: string, args: string[], binary = false) {
   return execFileAsync('git', ['-c','core.fsmonitor=false','-c','core.hooksPath=/dev/null','-C',repo,...args], {
     env: { PATH: process.env.PATH, GIT_CONFIG_NOSYSTEM:'1', GIT_CONFIG_GLOBAL:'/dev/null', GIT_TERMINAL_PROMPT:'0', GIT_NO_REPLACE_OBJECTS:'1', GIT_NO_LAZY_FETCH:'1' },
     encoding: binary ? 'buffer' : 'utf8', maxBuffer: 64 * 1024 * 1024,
   });
 }
 
-async function snapshot(repo: string, sha: string, workspace: string) {
+export async function snapshot(repo: string, sha: string, workspace: string) {
   const { stdout } = await git(repo,['ls-tree','-rz','--full-tree',sha]);
   for (const entry of String(stdout).split('\0').filter(Boolean)) {
     const tab = entry.indexOf('\t');
@@ -45,6 +45,18 @@ export async function readArtifact(directory: string, name: string) {
 export async function cancelExecution(records: Records, id: string) {
   const detail = records.show(id); const attempt = detail.attempts.at(-1);
   if (!attempt || ['completed','cancelled','resolved','start_failed'].includes(attempt.runState)) return;
+  if (attempt.kind === 'agent') {
+    let published=false;
+    try {
+      if (!attempt.stopDirectory) throw Error('Stop notification path unavailable');
+      await writeFile(join(String(attempt.stopDirectory),'requested'),'requested\n',{mode:0o600,flag:'wx'});
+      published=true;
+    } catch(error) { published=(error as NodeJS.ErrnoException).code==='EEXIST'; }
+    try {
+      records.updateAttempt(String(attempt.id),{runState:'unknown',cancellationNotification:published?'published':'failed',cancellationLimit:published?'Agent cancellation notification published; awaiting cooperative exit evidence. No close, abort or kill':'Agent cancellation notification unavailable; no close, abort or kill',...(published?{}:{cancellationError:'Could not publish cooperative stop notification'})});
+    } catch(error) {records.markUnresolved(String(attempt.id),Error(`Cooperative notification ${published?'published':'failed'}, but required record save failed`));}
+    return;
+  }
   if (!attempt.container || !/^orch-[a-f0-9-]+-\d+$/.test(attempt.container)) {
     records.updateAttempt(String(attempt.id), {runState:'unknown', cancellationLimit:'No usable container identity; manual stop confirmation required'});
     return;
@@ -69,8 +81,8 @@ export async function cancelExecution(records: Records, id: string) {
 export async function execute(records: Records, config: Configuration, executionId: string, data: string) {
   const detail = records.show(executionId);
   const capability = config.capabilities.find(c => c.id === detail.request.capability)!;
-  const environment = config.environments.find(e => e.id === capability.environment)!;
-  if (!capability.execution || !environment.docker) return;
+  const environment = config.environments.find(e => e.id === capability?.environment)!;
+  if (!capability?.execution || !environment?.docker) return;
   const commit = (detail.execution as {fixedSha?: string}).fixedSha ?? capability.execution.commit(detail.request.input);
   if (typeof commit !== 'string' || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(commit)) throw new Error('Execution requires a full commit SHA');
   const attempt = records.beginAttempt(executionId, config.version, capability.id, environment.id, commit);

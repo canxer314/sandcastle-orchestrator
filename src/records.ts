@@ -63,7 +63,7 @@ export class Records {
     let rejection: string | null = null;
     try {
       if (!config.repos.some(repo => repo.id === submission.repo)) throw new Error('Unknown repo');
-      const capability = config.capabilities.find(cap => cap.id === submission.capability);
+      const capability = config.capabilities.find(cap => cap.id === submission.capability) ?? config.roles?.find(role => role.id === submission.capability);
       if (!capability) throw new Error('Unknown capability');
       await capability.validate(submission.input);
     } catch (error) {
@@ -185,14 +185,14 @@ export class Records {
     return this.show(id);
   }
 
-  beginAttempt(executionId: string, version: string, capability: string, environment: string, selectedSha: string) {
+  beginAttempt(executionId: string, version: string, capability: string, environment: string, selectedSha: string, facts: Record<string,unknown> = {}) {
     const detail = this.show(executionId);
     if(detail.execution?.status !== 'queued' || this.management(executionId).cancellation) throw Error('Execution cannot start');
     if(detail.attempts.some(a=>['starting','running','unknown'].includes(a.runState) && !a.stopConfirmation)) throw Error('Stop not confirmed');
     const id = randomUUID();
     this.db.exec('BEGIN IMMEDIATE');
     try {
-      this.db.prepare('INSERT INTO attempts VALUES (?, ?, ?, ?, ?, ?, ?)').run(id, executionId, version, capability, environment, 'starting', JSON.stringify({ createdAt: new Date().toISOString(), selectedSha }));
+      this.db.prepare('INSERT INTO attempts VALUES (?, ?, ?, ?, ?, ?, ?)').run(id, executionId, version, capability, environment, 'starting', JSON.stringify({ ...facts, createdAt: new Date().toISOString(), selectedSha }));
       this.saveManagement(executionId,{fixedSha:selectedSha});
       this.db.prepare("UPDATE executions SET status = 'starting' WHERE id = ?").run(executionId);
       this.db.exec('COMMIT');
@@ -227,7 +227,9 @@ export class Records {
     const previous = JSON.parse(String(existing.facts));
     if(previous.cancellation && state === 'completed') {
       state = 'cancelled';
-      facts = {...facts, stopConfirmation: previous.containerState?.Running === false ? {kind:'docker-inspect',confirmedAt:new Date().toISOString(),containerState:previous.containerState} : {kind:'never-started',confirmedAt:new Date().toISOString()}};
+      const suppliedStop = (facts as {stopConfirmation?:unknown}).stopConfirmation;
+      if (previous.kind === 'agent' && !suppliedStop) state = 'unknown';
+      facts = {...facts, stopConfirmation: suppliedStop ?? (previous.kind === 'agent' ? undefined : previous.containerState?.Running === false ? {kind:'docker-inspect',confirmedAt:new Date().toISOString(),containerState:previous.containerState} : {kind:'never-started',confirmedAt:new Date().toISOString()})};
       const cancelledFacts = {...previous,...facts} as Record<string,unknown>;
       delete cancelledFacts.business; delete cancelledFacts.contract;
       facts = cancelledFacts;
