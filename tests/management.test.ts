@@ -1,3 +1,4 @@
+import { request } from 'node:http';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { mkdtemp, mkdir, writeFile, rm, chmod, stat, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -19,6 +20,23 @@ async function cli(args: string[]) {
   const [code] = await once(child, 'exit');
   clearTimeout(timer);
   return { code, stdout, stderr };
+}
+
+async function socketCall(socket: string, message: unknown) {
+  return new Promise<{ status: number | undefined; body: any }>((resolve, reject) => {
+    const req = request({ socketPath: socket, path: '/', method: 'POST' }, res => {
+      let body = '';
+      res.on('data', chunk => { body += chunk; });
+      res.on('error', reject);
+      res.on('end', () => {
+        try { resolve({ status: res.statusCode, body: JSON.parse(body) }); }
+        catch (error) { reject(error); }
+      });
+    });
+    req.on('error', reject);
+    req.setTimeout(3000, () => req.destroy(new Error('Socket request timed out')));
+    req.end(JSON.stringify(message));
+  });
 }
 
 async function fixture() {
@@ -69,6 +87,34 @@ afterEach(async () => {
   await Promise.all(directories.splice(0).map(dir => rm(dir, { recursive: true, force: true })));
 });
 
+test('socket submissions distinguish missing input from explicit null', async () => {
+  const f = await fixture();
+  await start(f);
+  const submission = { repo: 'alpha', capability: 'test-commit', source: 'manual' };
+  const missing = await socketCall(f.socket, { command: 'submit', submission });
+  expect(missing).toEqual({ status: 400, body: { error: 'Missing input' } });
+  const explicitNull = await socketCall(f.socket, { command: 'submit', submission: { ...submission, input: null } });
+  expect(explicitNull.status).toBe(200);
+  expect(explicitNull.body).toMatchObject({ accepted: false, reason: 'Expected commit text' });
+  const detail = await cli(['show', explicitNull.body.requestId, '--socket', f.socket]);
+  expect(JSON.parse(detail.stdout)).toMatchObject({ request: { input: null }, execution: null });
+  const accepted = await cli(['submit', '--socket', f.socket, '--repo', 'alpha', '--capability', 'test-commit', '--input', '"sha"', '--source', 'manual']);
+  expect(accepted.code, accepted.stderr).toBe(0);
+  expect(JSON.parse(accepted.stdout).accepted).toBe(true);
+});
+
+test('socket rejects unknown commands instead of returning an existing record', async () => {
+  const f = await fixture();
+  await start(f);
+  const submitted = await cli(['submit', '--socket', f.socket, '--repo', 'alpha', '--capability', 'test-commit', '--input', '"sha"', '--source', 'manual']);
+  const receipt = JSON.parse(submitted.stdout);
+  const unknown = await socketCall(f.socket, { command: 'delete', id: receipt.requestId });
+  expect(unknown).toEqual({ status: 400, body: { error: 'Unknown command' } });
+  const detail = await socketCall(f.socket, { command: 'show', id: receipt.requestId });
+  expect(detail.status).toBe(200);
+  expect(detail.body.request.id).toBe(receipt.requestId);
+});
+
 test('submission waits for asynchronous input rejection before saving a receipt', async () => {
   const f = await fixture();
   await writeFile(f.config, `export default { version:'v1', repos:[{id:'alpha',location:'/test/alpha'}], environments:[{id:'test'}], capabilities:[{
@@ -78,6 +124,26 @@ test('submission waits for asynchronous input rejection before saving a receipt'
   const result = await cli(['submit', '--socket', f.socket, '--repo', 'alpha', '--capability', 'test-commit', '--input', '42', '--source', 'manual']);
   expect(result.code, result.stderr).toBe(0);
   expect(JSON.parse(result.stdout)).toMatchObject({ accepted: false, reason: 'Async input rejected' });
+  const listed = await cli(['list', '--socket', f.socket]);
+  expect(JSON.parse(listed.stdout)).toEqual([]);
+});
+
+test.each(['sync', 'async'])('an empty %s validation error rejects the request across service restart', async mode => {
+  const f = await fixture();
+  await writeFile(f.config, `export default { version:'v1', repos:[{id:'alpha',location:'/test/alpha'}], environments:[{id:'test'}], capabilities:[{
+    id:'test-commit', environment:'test', ${mode === 'async' ? 'async ' : ''}validate() { throw new Error(''); }, run() {}
+  }] };`);
+  const service = await start(f);
+  const result = await cli(['submit', '--socket', f.socket, '--repo', 'alpha', '--capability', 'test-commit', '--input', '42', '--source', 'manual']);
+  expect(result.code, result.stderr).toBe(0);
+  const receipt = JSON.parse(result.stdout);
+  expect(receipt).toMatchObject({ accepted: false, reason: '' });
+  expect(receipt.executionId).toBeUndefined();
+  await stop(service);
+  await start(f);
+  const detail = await cli(['show', receipt.requestId, '--socket', f.socket]);
+  expect(detail.code, detail.stderr).toBe(0);
+  expect(JSON.parse(detail.stdout)).toMatchObject({ request: { input: 42, rejection: '' }, execution: null });
   const listed = await cli(['list', '--socket', f.socket]);
   expect(JSON.parse(listed.stdout)).toEqual([]);
 });
@@ -159,6 +225,23 @@ test('a transaction failure returns no receipt and does not retain a partial req
   expect(JSON.parse(listed.stdout)).toEqual([]);
   const accepted = await cli(['submit', '--socket', f.socket, '--repo', 'alpha', '--capability', 'test-commit', '--input', '"sha"', '--source', 'manual']);
   expect(JSON.parse(accepted.stdout).accepted).toBe(true);
+});
+
+test('a failed rejection save returns no receipt and can be retried after storage recovers', async () => {
+  const f = await fixture();
+  await start(f);
+  await chmod(f.dir, 0o500);
+  try {
+    const failed = await cli(['submit', '--socket', f.socket, '--repo', 'alpha', '--capability', 'test-commit', '--input', '42', '--source', 'manual']);
+    expect(failed.code).toBe(1);
+    expect(failed.stdout).toBe('');
+  } finally { await chmod(f.dir, 0o700); }
+  const rejected = await cli(['submit', '--socket', f.socket, '--repo', 'alpha', '--capability', 'test-commit', '--input', '42', '--source', 'manual']);
+  expect(rejected.code, rejected.stderr).toBe(0);
+  const receipt = JSON.parse(rejected.stdout);
+  expect(receipt).toMatchObject({ accepted: false, reason: 'Expected commit text' });
+  const detail = await cli(['show', receipt.requestId, '--socket', f.socket]);
+  expect(JSON.parse(detail.stdout)).toMatchObject({ request: { input: 42, rejection: 'Expected commit text' }, execution: null });
 });
 
 test('runtime files and socket are private even in an existing permissive data directory', async () => {

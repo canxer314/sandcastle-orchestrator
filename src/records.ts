@@ -39,9 +39,9 @@ export class Records {
         requestId, submission.repo, submission.capability, JSON.stringify(submission.input),
         submission.source, new Date().toISOString(), rejection,
       );
-      if (!rejection) this.db.prepare('INSERT INTO executions VALUES (?, ?, ?)').run(executionId, requestId, 'queued');
+      if (rejection === null) this.db.prepare('INSERT INTO executions VALUES (?, ?, ?)').run(executionId, requestId, 'queued');
       this.db.exec('COMMIT');
-      return rejection ? { accepted: false, requestId, reason: rejection } : { accepted: true, requestId, executionId };
+      return rejection !== null ? { accepted: false, requestId, reason: rejection } : { accepted: true, requestId, executionId };
     } catch (error) {
       this.db.exec('ROLLBACK');
       throw error;
