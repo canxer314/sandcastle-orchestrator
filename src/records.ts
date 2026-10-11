@@ -156,7 +156,7 @@ export class Records {
   }
 
   private toolNeedsReview(call: Record<string, any>) {
-    return !['completed','cancelled','resolved','start_failed'].includes(call.runState) || call.requiresAttention || call.persistenceError
+    return !['completed','cancelled','resolved','start_failed'].includes(call.runState) || call.publication?.state==='unknown' || call.requiresAttention || call.persistenceError
       || (call.cancellation && (!call.stopConfirmation || call.stopConfirmation.kind === 'manual') && call.runState !== 'start_failed');
   }
 

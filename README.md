@@ -181,6 +181,25 @@ MCP 只能绑定显式声明 `capability.execution.workspace: 'readonly'` 的能
 
 受控测试从 CLI/socket 建立角色尝试，通过真实 MCP stdio 与官方 client 验证成功、业务失败、启动故障、unknown、畸形参数、身份/路径拒绝及大日志读取；真实模型/镜像的验收另行授权执行，受控 Docker 替身不算真实执行验收。
 
+## 实现角色到 Draft PR（#24，受控验收）
+
+`examples/implementation.ts` 是普通 Role/Prompt/Skill/tools 配置增量。管理员显式设置 `roleBindings[].workspace: 'implementation'`；旧角色默认 readonly 不变。SDK 原代码与 Git mounts 始终 readonly，容器内初始化独立 `/implementation` clone 与本尝试专用 `orch/ATTEMPT_ID` 分支，初始化退出证据保存后才开放 MCP/模型。宿主 SDK postprocessing 只处理原只读代码，SDK `commits` 不作为 implementation 提交证据。
+
+实现角色调用既有 readonly capability 时，bound execute 的第一条内部命令在无网络容器收集当前 HEAD 与文件，第二条执行原 capability。两阶段共用串行命令、日志、Docker inspect 与 unknown 门禁。代码采集非原子，不保证原工作区瞬时一致；测试的是独立导出目录的实际 `revision.treeSha`。`actualSha` 是捕获 HEAD，dirty tree 不能冒充该 commit 已验证；`baseSha` 是原上下文。摘要、result.json、read_tool_file 和测试产物包含相同 revision。发现 symlink/submodule 拒绝；祖先目录竞态受容器可见范围约束，不声称全面阻止 symlink 竞态。宿主不读取或运行 implementation Git/config/filter/fsmonitor/hooks。
+
+管理员为获准测试 repo 配置 `publication: {github:'OWNER/REPO',remote:'https://github.com/OWNER/REPO.git',base:'main',env:{...专用凭据}}`，并将 `{id:'publish_draft',description:'...',publication:true}` 绑定角色。写入设施只接受 `operation: publish|query`、既有测试 `callId`、title/body；repo/branch/base/凭据不可由模型选择。发布从独立导出 tree 在可信临时 Git 中构建 commit，以原 base 为 parent，核对 tree 与测试证据一致。发布 commit SHA 与采集 HEAD 分别保存。实际写入者查询远端 branch/PR，存在则拒绝替换，push 前再查 branch，普通单 ref push 后核对远端 SHA，再创建并核验 Draft PR。核查与 push 之间仍可能竞态，遵循普通 Git fast-forward/non-fast-forward 语义；不承诺服务端 create-only、分支锁或统一幂等。Git/gh 专用凭据仅在宿主 writer 环境，不注入模型或测试容器；部署需配置 Git HTTPS credential helper 或既有专用 Git 认证，不能用 unrestricted 模型凭据替代。
+
+不提供 merge/force/comments/issues/settings/deploy 或任意写命令。响应丢失保存未知 publication，禁止再写，仅允许查询原 callId；查询 receipt 保存 branch SHA、PR 地址与 Draft/head/base 线索，不自动裁决未知结果。角色退出仍 unknown，恢复者须沿用 parent 与 tool 的 `confirm-stop → resolve/retry` 核对旧产物，retry 使用新分支，新需求/基线另建请求。不存在统一幂等、补偿或自动对账。
+
+```sh
+pnpm start submit --socket /srv/orchestrator-data/control.sock --repo approved-test \
+  --capability implementation --source manual \
+  --input '{"sha":"0123456789012345678901234567890123456789","issue":24,"issueBody":"管理员提供的获准 Issue 内容"}'
+pnpm start show EXECUTION_ID --socket /srv/orchestrator-data/control.sock
+```
+
+配置/记录/协议为增量兼容，旧 readonly 与独立能力路径保留。受控 CLI/socket、真实 MCP stdio 测试覆盖 dirty revision、拒绝路径、push/PR 已发生响应丢失及人工恢复。当前 repo 已完成一次获准的真实 CLI/socket、provider、Docker、MCP、普通推送与 Draft PR 样例，独立核对发布 tree 与测试 tree 一致，见 [#24 真实验收记录](docs/issue-24-real-acceptance.md)。该样例仅修改注释，不证明一般实现任务质量；真实响应丢失、取消等故障未在本次验证，不引用 #19/#22 验收替代。
+
 ## 取消与人工恢复
 
 重启扫描可执行的历史 queued 主 Agent 请求，历史确定性请求仍保持排队；不会重跑、重连或接管旧 starting/running 尝试。`show` 的 `location` 如实返回容器名；harness process identity 和 reconnect handle 不可得时为 `null`，不能据此声称已停止。

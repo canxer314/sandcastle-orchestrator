@@ -5,6 +5,7 @@ import { join, dirname, resolve, relative } from 'node:path';
 import { constants } from 'node:fs';
 import type { Configuration, ExecutionContext } from './config.js';
 import type { Records } from './records.js';
+import { revisionScript, parseRevision } from './revision.js';
 const execFileAsync = promisify(execFile);
 
 // No shell, global/system Git configuration, credentials or checkout hooks.
@@ -85,7 +86,7 @@ export async function cancelExecution(records: Records, id: string) {
 }
 
 export async function execute(records: Records, config: Configuration, executionId: string, data: string, bound?: {
-  attemptId:string; capability:string; input:unknown; actualSha:string; workspace:string; directory:string; callId:string;
+  attemptId:string; capability:string; input:unknown; actualSha:string; workspace:string; directory:string; callId:string; revisionSource?:string;
   save(facts:Record<string,any>):void;
 }) {
   let outcome:Record<string,any>={runState:'starting'};
@@ -101,7 +102,7 @@ export async function execute(records: Records, config: Configuration, execution
   const update=(facts:Record<string,any>)=>{if(bound){outcome={...outcome,...facts};bound.save(outcome)}else records.updateAttempt(attempt,facts)};
   const finish=(state:string,facts:Record<string,any>)=>{if(bound){outcome={...outcome,...facts,runState:state};bound.save(outcome)}else records.finishAttempt(attempt,state,facts)};
   const directory=bound?.directory ?? join(data,'attempts',attempt);
-  const workspace=bound?.workspace ?? join(directory,'workspace'); const artifacts=join(directory,'artifacts');
+  const workspace=bound?.revisionSource?join(directory,'revision'):bound?.workspace ?? join(directory,'workspace'); const artifacts=join(directory,'artifacts');
   let running=false;
   let pending=0;
   let closed=false;
@@ -111,23 +112,23 @@ export async function execute(records: Records, config: Configuration, execution
   try {
     const repo = config.repos.find(r => r.id === detail.request.repo)!;
     const { stdout } = await git(repo.location, ['rev-parse', '--verify', `${commit}^{commit}`]);
-    const actualSha=String(stdout).trim();
+    let actualSha=String(stdout).trim();
     if(actualSha!==commit)throw Error('Resolved commit differs from requested SHA');
     await mkdir(workspace,{recursive:true,mode:0o700});await mkdir(artifacts,{mode:0o700});
     await writeFile(join(directory,'stdout.log'),'');await writeFile(join(directory,'stderr.log'),'');
     update({actualSha,workspace,artifactsDirectory:artifacts,logs:{complete:false},container:`orch-${attempt}`});
     if(!bound)await snapshot(repo.location,actualSha,workspace);
-    const context:ExecutionContext={ actualSha, attemptId:attempt, input, exec: argv=>{
+    const runCommand=(argv:string[],mounts:string[],workdir:string,phase:string)=>{
       if (!Array.isArray(argv) || !argv.length || argv.some(arg=>typeof arg!=='string' || arg.includes('\0')))throw Error('Invalid command argv');
       if(closed)throw Error('Capability entrypoint already ended');
       if(unknownEnd)throw Error('A previous command end is unknown; no further commands may start');
       if(pending)throw Error('Commands within an attempt must be awaited sequentially');
       const latest = current();
-      if(!latest || latest.cancellation || !['starting','running'].includes(latest.runState)) throw Error('Attempt is no longer allowed to start commands');
+      if(!latest || latest.stopConfirmation || latest.cancellation || !['starting','running'].includes(latest.runState)) throw Error('Attempt is no longer allowed to start commands');
       const container=bound?`orch-${attempt}-tool-${bound.callId}-${++commandNumber}`:`orch-${attempt}-${++commandNumber}`;
-      update({runState:'running',logs:{complete:false},container});running=true;ended=false;pending++;
+      update({runState:'running',phase,logs:{complete:false},container});running=true;ended=false;pending++;
       const command = new Promise<{stdout:string;stderr:string;exitCode:number}>((resolve,reject)=>{
-        const child=spawn('docker',['run','--pull=never','--name',container,'--network','none','--cap-drop','ALL','--security-opt','no-new-privileges','--read-only','--user',`${process.getuid!()}:${process.getgid!()}`,'--tmpfs','/tmp:rw,nosuid,nodev,noexec','--mount',`type=bind,src=${workspace},dst=/workspace${bound || capability.execution?.workspace==='readonly'?',readonly':''}`,'--mount',`type=bind,src=${artifacts},dst=/artifacts`,'--workdir','/workspace','--entrypoint',argv[0],environment.docker!.image,...argv.slice(1)],{env:{PATH:process.env.PATH},stdio:['ignore','pipe','pipe']});
+        const child=spawn('docker',['run','--pull=never','--name',container,'--network','none','--cap-drop','ALL','--security-opt','no-new-privileges','--read-only','--user',`${process.getuid!()}:${process.getgid!()}`,'--tmpfs','/tmp:rw,nosuid,nodev,noexec',...mounts,'--workdir',workdir,'--entrypoint',argv[0],environment.docker!.image,...argv.slice(1)],{env:{PATH:process.env.PATH},stdio:['ignore','pipe','pipe']});
         let stdout='';let stderr='';let writes=Promise.resolve();let writeError:unknown;
         const onData=(stream:'stdout'|'stderr',chunk:Buffer)=>{
           if(stream==='stdout')stdout=(stdout+chunk.toString()).slice(-65536);else stderr=(stderr+chunk.toString()).slice(-65536);
@@ -156,11 +157,19 @@ export async function execute(records: Records, config: Configuration, execution
       const tracked=command.catch(error=>{if(running && !ended)unknownEnd=true;throw error;}).finally(()=>{pending--;});
       tracked.catch(()=>{});
       return tracked;
-    }};
+    };
+    if(bound?.revisionSource) {
+      const script=join(directory,'revision.cjs');await writeFile(script,revisionScript,{mode:0o600});
+      const captured=await runCommand(['node','/revision.cjs','/source','/revision'],['--mount',`type=bind,src=${bound.revisionSource},dst=/source,readonly`,'--mount',`type=bind,src=${script},dst=/revision.cjs,readonly`,'--mount',`type=bind,src=${workspace},dst=/revision`],'/tmp','revision');
+      if(captured.exitCode!==0)throw Error('Revision export failed');
+      const revision=parseRevision(captured.stdout);actualSha=revision.headSha;
+      update({baseSha:commit,actualSha,revision,revisionExecution:{container:outcome.container,containerState:outcome.containerState,logs:outcome.logs}});
+    }
+    const context:ExecutionContext={actualSha,attemptId:attempt,input,exec:argv=>runCommand(argv,['--mount',`type=bind,src=${workspace},dst=/workspace${bound || capability.execution?.workspace==='readonly'?',readonly':''}`,'--mount',`type=bind,src=${artifacts},dst=/artifacts`],'/workspace','capability')};
     const beforeEntrypoint = current();
     if (!beforeEntrypoint || beforeEntrypoint.id !== attempt || beforeEntrypoint.stopConfirmation || ['completed','cancelled','resolved','start_failed'].includes(beforeEntrypoint.runState)) return outcome;
     if (beforeEntrypoint.cancellation) {
-      finish('cancelled',{stopConfirmation:{kind:'never-started',confirmedAt:new Date().toISOString()},endedAt:new Date().toISOString()});
+      finish('cancelled',{stopConfirmation:commandNumber?{kind:'docker-inspect',confirmedAt:new Date().toISOString(),containerState:outcome.containerState}:{kind:'never-started',confirmedAt:new Date().toISOString()},endedAt:new Date().toISOString()});
       return outcome;
     }
     let returned:unknown;
@@ -192,7 +201,7 @@ export async function execute(records: Records, config: Configuration, execution
     catch(error) { artifactError = error instanceof Error ? error.message : 'Invalid artifact'; }
     finish('completed',artifactError
       ? {contract:'error',contractError:artifactError,endedAt:new Date().toISOString()}
-      : {contract:'valid',business:result.business,artifacts:names.map((name:string)=>({name,attemptId:attempt,actualSha})),endedAt:new Date().toISOString()});
+      : {contract:'valid',business:result.business,artifacts:names.map((name:string)=>({name,attemptId:attempt,actualSha,...(outcome.revision?{revision:outcome.revision}:{})})),endedAt:new Date().toISOString()});
   } catch (error) {
     try {
       finish(running?'unknown':'start_failed',{error:error instanceof Error?error.message:'Execution failed',endedAt:new Date().toISOString()});

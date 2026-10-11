@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 import { spawn, execFile } from 'node:child_process';
 import { createWriteStream } from 'node:fs';
 import { pipeline } from 'node:stream/promises';
@@ -25,6 +26,9 @@ export async function executeRole(records:Records, config:Configuration, executi
   if(typeof sha!=='string' || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(sha))throw Error('Role requires a full commit SHA');
   const attempt=records.beginAttempt(executionId,config.version,role.id,environment.id,sha,{kind:'agent',provider:provider.id,sessionPolicy:'new',attemptDeadlineSeconds:binding.attemptDeadlineSeconds});
   const directory=join(data,'attempts',attempt);const workspace=join(directory,'repo');const container=`orch-${attempt}-1`;const branch=`orch/${attempt}`;
+  const implementation=binding.workspace==='implementation';
+  const executableToolIds=role.tools.filter(id=>config.tools?.some(t=>t.id===id && (t.capability || t.publication)));
+  const implementationDirectory=join(directory,'implementation');
   let launched=false;
   let tools:Awaited<ReturnType<typeof openRoleTools>>;
   let toolObservationError:string|undefined;
@@ -50,6 +54,10 @@ export async function executeRole(records:Records, config:Configuration, executi
     const stopDirectory=join(directory,'stop');await mkdir(stopDirectory,{recursive:true,mode:0o700});
     records.updateAttempt(attempt,{stopDirectory});
     await mkdir(workspace,{recursive:true,mode:0o700});
+    if(implementation) {
+      await mkdir(implementationDirectory,{mode:0o700});
+      await mkdir(join(directory,'mcp'),{mode:0o700});
+    }
     // Validate the same fixed-tree boundary as deterministic execution before cloning.
     await snapshot(repo.location,sha,join(directory,'context'));
     const tree=await git(repo.location,['ls-tree','-r','--name-only',sha]);
@@ -71,7 +79,7 @@ export async function executeRole(records:Records, config:Configuration, executi
     if(callableTools.length)toolServer=await serveRoleTools(toolDirectory,callableTools,attempt,actualSha,error=>{toolObservationError=error;try{records.updateAttempt(attempt,{toolObservationError:error});}catch(saveError){records.markUnresolved(attempt,saveError);}});
     const prompt=[built,...role.skills,...role.tools.map(id=>config.tools!.find(t=>t.id===id)!.description),...(callableTools.length?['Call deployed read-only tools with node /orchestrator-tools/call.mjs TOOL_ID JSON_INPUT. Tools are scoped by administrator configuration. Results are observed source data, not verified model conclusions. Tool failures mean evidence is unavailable; report limitations instead of inventing observations.']:[]),...(mcp.facts.length ? ['Administrator MCP service facts: '+JSON.stringify(mcp.facts),'Use the services\' native tools and feedback. Missing tools or unreadable log references are unavailable, not success. Distinguish business results, tool faults and unknown outcomes. A timeout/disconnection or agent exit does not prove remote work stopped. Do not repeat uncertain side effects without service-specific evidence.'] : []),`Cooperative stop for attempt ${attempt}: read /orchestrator-stop/requested at appropriate checkpoints you choose. The read-only file identifies this attempt and the persisted reason and request time. If present, stop starting new work, summarize available results and end normally. A long tool call may delay reading; this is not forced termination or proof that child agents, tools or remote tasks stopped, and it does not roll back writes.`].join('\n\n');
     await writeFile(join(directory,'stdout.log'),'');await writeFile(join(directory,'stderr.log'),'');
-    records.updateAttempt(attempt,{kind:'agent',actualSha,workspace,stopDirectory,container,branch,provider:provider.id,prompt,description:role.description,skills:role.skills,tools:role.tools,...(mcp.facts.length ? {mcp:mcp.facts} : {}),logs:{complete:false},sessionPolicy:'new',...(callableTools.length?{artifacts:[{name:'observations.jsonl',attemptId:attempt,actualSha,kind:'tool-observations'}]}:{})});
+    records.updateAttempt(attempt,{kind:'agent',actualSha,workspace,workspaceMode:implementation?'implementation':'readonly',stopDirectory,container,branch,provider:provider.id,prompt,description:role.description,skills:role.skills,tools:role.tools,...(mcp.facts.length ? {mcp:mcp.facts} : {}),logs:{complete:false},sessionPolicy:'new',...(callableTools.length?{artifacts:[{name:'observations.jsonl',attemptId:attempt,actualSha,kind:'tool-observations'}]}:{})});
     const docker=environment.docker!;const binary=docker.binary ?? 'docker';
     const command=async(args:string[])=>{try{return await execFileAsync(binary,args,{env:{PATH:process.env.PATH},maxBuffer:8*1024*1024})}catch{throw Error('Docker facility operation failed; inspect the recorded container identity')}};
     const sandboxProvider=createBindMountSandboxProvider({name:'orchestrator-docker',env:docker.env ?? {},sandboxHomedir:'/home/agent',create:async options=>{
@@ -80,12 +88,21 @@ export async function executeRole(records:Records, config:Configuration, executi
       if(current?.cancellation){records.finishAttempt(attempt,'cancelled',{stopConfirmation:{kind:'never-started',confirmedAt:new Date().toISOString()},endedAt:new Date().toISOString()});throw Error('Cancellation requested before agent start');}
       records.updateAttempt(attempt,{runState:'running'});launched=true;
       const hostWorkspace=options.mounts.find(m=>m.sandboxPath==='/home/agent/workspace')?.hostPath;
-      if(role.tools.some(id=>config.tools?.some(t=>t.id===id && t.capability))) {if(!hostWorkspace)throw Error('Current role workspace mount unavailable');tools=await openRoleTools(records,config,{executionId,attemptId:attempt,directory,workspace:hostWorkspace,actualSha,toolIds:role.tools});}
+      if(!implementation && executableToolIds.length) {if(!hostWorkspace)throw Error('Current role workspace mount unavailable');tools=await openRoleTools(records,config,{executionId,attemptId:attempt,directory,workspace:hostWorkspace,actualSha,toolIds:role.tools});}
       const mounts=[...options.mounts,...mcp.mounts].flatMap(m=>['--mount',`type=bind,src=${m.hostPath},dst=${m.sandboxPath},readonly`]);
-      await command(['run','--detach','--pull=never','--name',container,'--network',docker.network ?? 'none','--cap-drop','ALL','--security-opt','no-new-privileges','--read-only','--user',`${process.getuid!()}:${process.getgid!()}`,'--tmpfs','/tmp:rw,nosuid,nodev','--tmpfs',`/home/agent:rw,nosuid,nodev,uid=${process.getuid!()},gid=${process.getgid!()},mode=0700`,...mounts,...(tools?['--mount',`type=bind,src=${tools.mcpDirectory},dst=/orchestrator-mcp,readonly`]:[]),...(callableTools.length?['--mount',`type=bind,src=${toolDirectory},dst=/orchestrator-tools,readonly`]:[]),'--mount',`type=bind,src=${stopDirectory},dst=/orchestrator-stop,readonly`,...Object.entries({...options.env,HOME:'/home/agent',GIT_CONFIG_NOSYSTEM:'1',GIT_CONFIG_SYSTEM:'/dev/null',GIT_TERMINAL_PROMPT:'0',GIT_NO_REPLACE_OBJECTS:'1',GIT_NO_LAZY_FETCH:'1'}).flatMap(([key,value])=>['--env',`${key}=${value}`]),'--entrypoint','sh',docker.image,'-c','while :; do sleep 3600; done']);
-      const sandboxPath='/home/agent/workspace';
+      await command(['run','--detach','--pull=never','--name',container,'--network',docker.network ?? 'none','--cap-drop','ALL','--security-opt','no-new-privileges','--read-only','--user',`${process.getuid!()}:${process.getgid!()}`,'--tmpfs','/tmp:rw,nosuid,nodev','--tmpfs',`/home/agent:rw,nosuid,nodev,uid=${process.getuid!()},gid=${process.getgid!()},mode=0700`,...mounts,...(implementation?['--mount',`type=bind,src=${implementationDirectory},dst=/implementation`,'--mount',`type=bind,src=${join(directory,'mcp')},dst=/orchestrator-mcp,readonly`]:[]),...(tools?['--mount',`type=bind,src=${tools.mcpDirectory},dst=/orchestrator-mcp,readonly`]:[]),...(callableTools.length?['--mount',`type=bind,src=${toolDirectory},dst=/orchestrator-tools,readonly`]:[]),'--mount',`type=bind,src=${stopDirectory},dst=/orchestrator-stop,readonly`,...Object.entries({...options.env,HOME:'/home/agent',GIT_CONFIG_NOSYSTEM:'1',GIT_CONFIG_SYSTEM:'/dev/null',GIT_TERMINAL_PROMPT:'0',GIT_NO_REPLACE_OBJECTS:'1',GIT_NO_LAZY_FETCH:'1'}).flatMap(([key,value])=>['--env',`${key}=${value}`]),'--entrypoint','sh',docker.image,'-c','while :; do sleep 3600; done']);
+      const sandboxPath=implementation?'/implementation':'/home/agent/workspace';
+      if(implementation) {
+        // SDK postprocessing runs host Git. Its mounts stay read-only; editable Git never reaches it.
+        const marker=`ORCH_INIT_${randomBytes(24).toString('hex')}`;
+        const initialized=await command(['exec','--workdir','/implementation',container,'sh','-c',`(git -c core.hooksPath=/dev/null clone --no-local -- /home/agent/workspace . && git remote remove origin && git -c core.hooksPath=/dev/null checkout -B '${branch}' '${actualSha}'); code=$?; printf '\\n${marker}:%s\\n' "$code"; exit "$code"`]);
+        if(!initialized.stdout.split('\n').includes(`${marker}:0`))throw Error('Implementation initialization exit evidence unavailable');
+        records.updateAttempt(attempt,{initialization:{kind:'exec-exit-marker',exitCode:0,container,confirmedAt:new Date().toISOString()}});
+        if(executableToolIds.length)tools=await openRoleTools(records,config,{executionId,attemptId:attempt,directory,workspace:implementationDirectory,revisionSource:implementationDirectory,actualSha,toolIds:role.tools});
+      }
       return {worktreePath:sandboxPath,exec:(text,opts)=>new Promise((resolve,reject)=>{
-        const child=spawn(binary,['exec','-i','--workdir',opts?.cwd ?? sandboxPath,container,'sh','-c',text],{env:{PATH:process.env.PATH},stdio:['pipe','pipe','pipe']});
+        const cwd=implementation && (!opts?.cwd || opts.cwd==='/home/agent/workspace' || opts.cwd.startsWith('/home/agent/workspace/'))?sandboxPath+(opts?.cwd?.slice('/home/agent/workspace'.length) ?? ''):opts?.cwd ?? sandboxPath;
+        const child=spawn(binary,['exec','-i','--workdir',cwd,container,'sh','-c',text],{env:{PATH:process.env.PATH},stdio:['pipe','pipe','pipe']});
         let stdout='';let stderr='';let line='';let writes=Promise.resolve();let writeError:unknown;
         const save=(stream:'stdout'|'stderr',chunk:Buffer)=>{const pipe=stream==='stdout'?child.stdout:child.stderr;pipe.pause();writes=writes.then(()=>appendFile(join(directory,`${stream}.log`),chunk)).catch(error=>{writeError=error}).finally(()=>pipe.resume())};
         child.stdout.on('data',(chunk:Buffer)=>{stdout=(stdout+chunk.toString()).slice(-65536);line+=chunk.toString();let newline;while((newline=line.indexOf('\n'))>=0){opts?.onLine?.(line.slice(0,newline));line=line.slice(newline+1)}save('stdout',chunk);});
@@ -99,7 +116,7 @@ export async function executeRole(records:Records, config:Configuration, executi
       },close:async()=>{ /* No automatic stop/remove: retained for audited administrator cleanup. */ }};
     }});
     const sandbox=await createSandbox({cwd:workspace,branch,baseBranch:sha,sandbox:sandboxProvider});
-    if(tools)agent=(provider.configureMcp ?? configureClaudeMcp)(provider.agent,[...mcp.connections,{service:'orchestrator',configFile:'/orchestrator-mcp/config.json',tools:role.tools.filter(id=>config.tools?.some(t=>t.id===id && t.capability))}]);
+    if(tools)agent=(provider.configureMcp ?? configureClaudeMcp)(provider.agent,[...mcp.connections,{service:'orchestrator',configFile:'/orchestrator-mcp/config.json',tools:executableToolIds}]);
     const result=await runAgent(sandbox,agent,prompt,()=>{if(deadlineTimer)clearTimeout(deadlineTimer)});
     const largeOutput=result.output!==null && Buffer.byteLength(result.output)>65536;
     let output=result.output;
@@ -108,7 +125,7 @@ export async function executeRole(records:Records, config:Configuration, executi
       while((bytes[end]! & 0xc0)===0x80)end--;
       output=bytes.subarray(0,end).toString('utf8');
     }
-    const facts={...result,output,...(largeOutput?{outputTruncated:true}:{}),endedAt:new Date().toISOString(),logs:{complete:result.exitCode!==null && !result.error},stopConfirmation:result.exitCode===null?undefined:{kind:'agent-exit-marker',confirmedAt:new Date().toISOString(),exitCode:result.exitCode}};
+    const facts={...result,...(implementation?{commits:[],commitEvidence:'Use revision and publication receipts; SDK commits belong to the read-only source'}:{}),output,...(largeOutput?{outputTruncated:true}:{}),endedAt:new Date().toISOString(),logs:{complete:result.exitCode!==null && !result.error},stopConfirmation:result.exitCode===null?undefined:{kind:'agent-exit-marker',confirmedAt:new Date().toISOString(),exitCode:result.exitCode}};
     lifecycleFacts=facts;
     // Keep lifecycle evidence available to every storage-failure path; stopConfirmation
     // is saved with the final state because it also closes the mutable-attempt guard.
