@@ -95,10 +95,10 @@ export async function serve(data: string, configPath: string) {
             const stdout = await read('stdout'); const stderr = await read('stderr');
             result = {attemptId:attempt.id,actualSha:attempt.actualSha,availability:stdout !== null && stderr !== null ? 'available' : 'unavailable',stdout:stdout?.text??null,stderr:stderr?.text??null,truncated:{stdout:stdout?.truncated??false,stderr:stderr?.truncated??false},complete:attempt.logs?.complete === true && stdout !== null && stderr !== null};
           } else {
-            let content: string | null;
-            try { content = await readArtifact(join(directory,'artifacts'),message.name); }
+            let content: Awaited<ReturnType<typeof readArtifact>> | null;
+            try { content = await readArtifact(join(directory,'artifacts'),message.name,message.offset); }
             catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; content = null; }
-            result = {attemptId:attempt.id,actualSha:attempt.actualSha,name:message.name,availability:content === null ? 'unavailable' : 'available',encoding:'base64',content};
+            result = {attemptId:attempt.id,actualSha:attempt.actualSha,name:message.name,availability:content === null ? 'unavailable' : 'available',encoding:'base64',...(typeof content==='object' && content!==null?content:{content})};
           }
           // File reads yield to other management requests; do not return stale completeness
           // if cleanup removed evidence while the descriptor was open.

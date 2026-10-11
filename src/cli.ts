@@ -7,7 +7,7 @@ let serving = false;
 try {
   const { values, positionals } = parseArgs({
     allowPositionals: true,
-    options: Object.fromEntries(['data', 'config', 'socket', 'repo', 'capability', 'input', 'source', 'status', 'deduplication-key', 'scheduled-at', 'attempt', 'name', 'reason', 'handling', 'external-results'].map(name => [name, { type: 'string' as const }])),
+    options: Object.fromEntries(['data', 'config', 'socket', 'repo', 'capability', 'input', 'source', 'status', 'deduplication-key', 'scheduled-at', 'attempt', 'name', 'reason', 'handling', 'external-results', 'offset'].map(name => [name, { type: 'string' as const }])),
   });
   const command = positionals[0];
   if (!['serve', 'submit', 'show', 'list', 'logs', 'artifact', 'cancel', 'confirm-stop', 'resolve', 'retry', 'cleanup'].includes(command)) throw new Error('Unknown command; use serve, submit, show, list, logs, artifact, cancel, confirm-stop, resolve, retry or cleanup');
@@ -25,11 +25,12 @@ try {
     });
     await serve(required('data'), required('config'));
   } else {
+    if(command==='artifact' && values.offset!==undefined && !/^\d+$/.test(values.offset))throw Error('Invalid --offset');
     const socket = required('socket');
     const message = command === 'submit'
       ? { command, submission: { repo: required('repo'), capability: required('capability'), input: JSON.parse(required('input')), source: required('source'), deduplicationKey: values['deduplication-key'], scheduledAt: values['scheduled-at'] } }
       : command === 'list' ? { command, repo: values.repo, status: values.status, source: values.source }
-      : { command, id: positionals[1], attempt: values.attempt, ...(['cancel','confirm-stop','resolve','retry'].includes(command) ? {reason:required('reason'), source:values.source, handling:values.handling, externalResults:values['external-results']} : {}), ...(command === 'artifact' ? { name: required('name') } : {}) };
+      : { command, id: positionals[1], attempt: values.attempt, ...(['cancel','confirm-stop','resolve','retry'].includes(command) ? {reason:required('reason'), source:values.source, handling:values.handling, externalResults:values['external-results']} : {}), ...(command === 'artifact' ? { name: required('name'), ...(values.offset!==undefined?{offset:Number(values.offset)}:{}) } : {}) };
     console.log(JSON.stringify(await call(socket, message)));
   }
 } catch (error) {

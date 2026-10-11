@@ -27,6 +27,12 @@ export async function loadConfiguration(path: string): Promise<Configuration> {
       if (typeof environment.docker.image !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9._/@:-]*$/.test(environment.docker.image)) throw Error(`Invalid Docker image: ${environment.id}`);
     }
   }
+  if(config.tools!==undefined && !Array.isArray(config.tools))throw Error('Invalid tools');
+  const toolIds=new Set<string>();
+  for(const tool of config.tools ?? []) {
+    if(!tool || typeof tool.id!=='string' || !tool.id || toolIds.has(tool.id) || typeof tool.description!=='string' || (tool.read!==undefined && typeof tool.read!=='function'))throw Error('Invalid or duplicate tool');
+    toolIds.add(tool.id);
+  }
   if (config.roles !== undefined && !Array.isArray(config.roles)) throw Error('Invalid roles');
   for (const role of config.roles ?? []) {
     if (!role || typeof role.id !== 'string' || !role.id || config.capabilities.some((c: {id:string}) => c.id === role.id)) throw Error('Invalid or conflicting role id');
@@ -113,7 +119,7 @@ export interface ExecutionContext {
 export interface Configuration {
   version: string;
   roles?: Role[];
-  tools?: {id:string; description:string}[];
+  tools?: {id:string; description:string; read?(input:unknown): Promise<unknown>}[];
   mcpServices?: McpService[];
   providers?: {id: string; agent: AgentProvider; configureMcp?(agent: AgentProvider, connections: McpConnection[]): AgentProvider}[];
   roleBindings?: {role: string; provider: string; environment: string; attemptDeadlineSeconds?: number; commit(input: unknown): string}[];
