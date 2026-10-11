@@ -136,14 +136,14 @@ export class Records {
       .run(id, JSON.stringify({...this.management(id), ...facts}));
   }
 
-  cancel(id: string, reason: string) {
+  cancel(id: string, reason: string, kind?: 'deadline') {
     const detail = this.show(id);
     if (!detail.execution) throw Error('Execution not found');
     if (detail.execution.status === 'completed') return detail;
     const attempt = detail.attempts.at(-1);
     this.db.exec('BEGIN IMMEDIATE');
     try {
-      const cancellation = this.management(String(detail.execution.id)).cancellation ?? {reason, requestedAt: new Date().toISOString()};
+      const cancellation = this.management(String(detail.execution.id)).cancellation ?? {reason, requestedAt: new Date().toISOString(), ...(kind ? {kind} : {})};
       this.saveManagement(String(detail.execution.id), {cancellation});
       if (!attempt || detail.execution.status === 'queued') this.db.prepare("UPDATE executions SET status = 'cancelled' WHERE id = ?").run(String(detail.execution.id));
       else this.db.prepare('UPDATE attempts SET facts = ? WHERE id = ?').run(JSON.stringify({...JSON.parse(String(this.db.prepare('SELECT facts FROM attempts WHERE id = ?').get(String(attempt.id))!.facts)), cancellation}), String(attempt.id));
@@ -190,9 +190,11 @@ export class Records {
     if(detail.execution?.status !== 'queued' || this.management(executionId).cancellation) throw Error('Execution cannot start');
     if(detail.attempts.some(a=>['starting','running','unknown'].includes(a.runState) && !a.stopConfirmation)) throw Error('Stop not confirmed');
     const id = randomUUID();
+    const createdAt = new Date().toISOString();
+    const deadlineAt = typeof facts.attemptDeadlineSeconds === 'number' ? new Date(Date.parse(createdAt) + facts.attemptDeadlineSeconds * 1000).toISOString() : undefined;
     this.db.exec('BEGIN IMMEDIATE');
     try {
-      this.db.prepare('INSERT INTO attempts VALUES (?, ?, ?, ?, ?, ?, ?)').run(id, executionId, version, capability, environment, 'starting', JSON.stringify({ ...facts, createdAt: new Date().toISOString(), selectedSha }));
+      this.db.prepare('INSERT INTO attempts VALUES (?, ?, ?, ?, ?, ?, ?)').run(id, executionId, version, capability, environment, 'starting', JSON.stringify({ ...facts, createdAt, ...(deadlineAt ? {deadlineAt} : {}), selectedSha }));
       this.saveManagement(executionId,{fixedSha:selectedSha});
       this.db.prepare("UPDATE executions SET status = 'starting' WHERE id = ?").run(executionId);
       this.db.exec('COMMIT');

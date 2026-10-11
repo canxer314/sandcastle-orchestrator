@@ -46,6 +46,7 @@ export async function loadConfiguration(path: string): Promise<Configuration> {
     if(!config.roles?.some((r:Role)=>r.id===binding.role) || !providerIds.has(binding.provider) || bindings.has(binding.role) || typeof binding.commit!=='function' || !environment?.docker)throw Error('Invalid role binding');
     if(!/^[a-zA-Z0-9][a-zA-Z0-9._/@:-]*$/.test(environment.docker.image))throw Error('Invalid role Docker image');
     if(environment.docker.network==='host')throw Error('Role Docker host network is not permitted');
+    if(binding.attemptDeadlineSeconds!==undefined && (typeof binding.attemptDeadlineSeconds!=='number' || !Number.isFinite(binding.attemptDeadlineSeconds) || binding.attemptDeadlineSeconds<=0 || binding.attemptDeadlineSeconds>(8640000000000000-Date.now())/1000))throw Error('Invalid role attempt deadline');
     bindings.add(binding.role);
   }
   return config;
@@ -73,7 +74,7 @@ export interface Configuration {
   roles?: Role[];
   tools?: {id:string; description:string}[];
   providers?: {id: string; agent: AgentProvider}[];
-  roleBindings?: {role: string; provider: string; environment: string; commit(input: unknown): string}[];
+  roleBindings?: {role: string; provider: string; environment: string; attemptDeadlineSeconds?: number; commit(input: unknown): string}[];
   repos: { id: string; location: string }[];
   environments: { id: string; docker?: { image: string; binary?: string; network?: string; env?: Record<string,string> } }[];
   capabilities: {

@@ -74,7 +74,15 @@ pnpm start logs EXECUTION_ID --attempt ATTEMPT_ID --socket /srv/orchestrator-dat
 
 `Sandbox.run` resolve 与模型文本都不能证明退出。公开 provider command 外包 subshell，在 CLI 实际结束后写随机 exit marker，stream parser 精确识别该 marker，保留原 stdin/parser/session 契约；marker 缺失保持 unknown。该证据用于可信设施中的生命周期观察，不是抵抗恶意容器/模型伪造的安全认证。显式 `idleTimeoutSeconds: Infinity`、`completionTimeoutSeconds: Infinity`、`completionSignal: []`，不增加 token/费用/turn 预算。Git setup/commit collection 沿用 SDK 10s/30s 真实设施超时；Docker启动与管理员工具各自负责超时，编排器不强杀。
 
-2026-10-11 已在授权环境完成真实只读单角色运行与人工 retry，通过 Claude Code → CC-Switch → Codex OAuth 路径验证挂载、认证、报告、session 导出和退出证据，详见 [验收记录](docs/issue-19-real-acceptance.md)。此结果不代表其他 provider 或真实协作取消响应通过；并发调度 #20 不在本实现范围。
+2026-10-11 已在授权环境完成真实只读单角色运行与人工 retry，通过 Claude Code → CC-Switch → Codex OAuth 路径验证挂载、认证、报告、session 导出和退出证据，详见 [验收记录](docs/issue-19-real-acceptance.md)。此结果不代表其他 provider 或真实协作取消响应通过；并发调度不在本实现范围。
+
+### 协作停止与显式期限（#20）
+
+`roleBindings` 可选 `attemptDeadlineSeconds`（有限正数，支持小数秒）；省略时无期限，仅适用于主 Agent 角色，不影响确定性执行。尝试进入 `starting` 时一并保存期限秒数、`createdAt` 和绝对 `deadlineAt`，包含准备与启动时间，不计排队。到期先保存 `cancellation.kind: deadline`、原因和请求时间，再沿用取消通路发布只读停止文件；不延长期限、不暂停续跑、不自动重试。准备阶段收到停止意图则不启动 Agent，保存 `never-started` 证据。
+
+停止文件保留 `requested` 首行并增加 attempt/execution 身份、原因、请求时间及可读说明。Prompt 让 Agent 自主选择检查点，停止开展新工作、整理结果并正常结束，长工具调用可能延迟响应。`cancellationNotification: published/failed` 区分发送结果；published 不是结束证明。未配合、发送失败或保存未决继续保持 unknown，禁止替代尝试，后续调度必须继续计入主 Agent 额度；本版本尚未实现额度调度。可信 CLI 退出后才记录实际取消终态；取消不证明子 Agent、工具或远端任务停止，也不撤销写入。
+
+配置和 SQLite JSON 字段均为兼容性增加，原 CLI/socket 命令、旧记录及停止文件存在性检查保持有效。回退到此前版本不会执行新增期限，需先停止服务并核查活跃尝试，再按下述备份回退流程处理。受控 CLI/socket 测试覆盖期限和停止故障；#20 的真实 provider 停止读取、SDK 生命周期及实际退出仍需新的明确环境授权，#19 的真实运行记录不能替代该验收。
 
 ## 取消与人工恢复
 
