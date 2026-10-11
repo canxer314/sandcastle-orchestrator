@@ -21,6 +21,7 @@ export async function loadConfiguration(path: string): Promise<Configuration> {
   validateLimit(config.primaryAgentLimit);
   for (const repo of config.repos) {
     validateLimit(repo.primaryAgentLimit);
+    if(repo.publication && (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo.publication.github) || repo.publication.remote!==`https://github.com/${repo.publication.github}.git` || !/^[A-Za-z0-9][A-Za-z0-9/_.-]*$/.test(repo.publication.base) || repo.publication.base.includes('..')))throw Error('Invalid publication target');
     if (typeof repo.location !== 'string' || !repo.location) throw new Error(`Missing repo location: ${repo.id}`);
   }
   for (const capability of config.capabilities) {
@@ -36,6 +37,9 @@ export async function loadConfiguration(path: string): Promise<Configuration> {
   }
   for(const tool of Array.isArray(config.tools) ? config.tools : []) {
     if(tool?.read!==undefined && (typeof tool.read!=='function' || typeof tool.id!=='string' || !tool.id || typeof tool.description!=='string' || config.tools.filter((other:{id?:unknown}|null)=>other?.id===tool.id).length!==1))throw Error('Invalid or duplicate tool');
+    if(tool?.publication!==undefined) {
+      if(tool.publication!==true || tool.capability || tool.read || typeof tool.id!=='string' || !/^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(tool.id) || tool.id==='read_tool_file' || typeof tool.description!=='string' || !tool.description || config.tools.filter((t:{id:string})=>t.id===tool.id).length!==1)throw Error('Invalid publication tool');
+    }
     if(tool?.capability!==undefined) {
       if(typeof tool.id!=='string' || !tool.id || typeof tool.description!=='string' || !tool.description || config.tools.filter((other:{id?:unknown}|null)=>other?.id===tool.id).length!==1)throw Error('Invalid or duplicate tool');
       const capability=config.capabilities.find((c:{id:string})=>c.id===tool.capability);
@@ -67,7 +71,9 @@ export async function loadConfiguration(path: string): Promise<Configuration> {
     if(!/^[a-zA-Z0-9][a-zA-Z0-9._/@:-]*$/.test(environment.docker.image))throw Error('Invalid role Docker image');
     if(environment.docker.network==='host')throw Error('Role Docker host network is not permitted');
     const role=config.roles.find((r:Role)=>r.id===binding.role);
-    if(role.tools.some((id:string)=>config.tools?.some((t:{id:string;capability?:string})=>t.id===id && t.capability)) && config.providers.find((p:{id:string})=>p.id===binding.provider).mcp!=='claude-code')throw Error('Executable role tools require explicit claude-code MCP provider');
+    if(role.tools.some((id:string)=>config.tools?.some((t:{id:string;capability?:string})=>t.id===id && (t.capability || (t as {publication?:boolean}).publication))) && config.providers.find((p:{id:string})=>p.id===binding.provider).mcp!=='claude-code')throw Error('Executable role tools require explicit claude-code MCP provider');
+    if(role.tools.some((id:string)=>config.tools?.some((t:{id:string;publication?:boolean})=>t.id===id && t.publication)) && binding.workspace!=='implementation')throw Error('Publication requires implementation workspace');
+    if(binding.workspace!==undefined && binding.workspace!=='implementation')throw Error('Invalid role workspace mode');
     if(binding.attemptDeadlineSeconds!==undefined && (typeof binding.attemptDeadlineSeconds!=='number' || !Number.isFinite(binding.attemptDeadlineSeconds) || binding.attemptDeadlineSeconds<=0 || binding.attemptDeadlineSeconds>(8640000000000000-Date.now())/1000))throw Error('Invalid role attempt deadline');
     bindings.add(binding.role);
   }
@@ -136,11 +142,11 @@ export interface Configuration {
   version: string;
   primaryAgentLimit?: number;
   roles?: Role[];
-  tools?: {id:string; description:string; capability?:string; inputSchema?:ZodObject; read?(input:unknown): Promise<unknown>}[];
+  tools?: {id:string; description:string; capability?:string; publication?:true; inputSchema?:ZodObject; read?(input:unknown): Promise<unknown>}[];
   mcpServices?: McpService[];
   providers?: {id: string; agent: AgentProvider; mcp?:'claude-code'; configureMcp?(agent: AgentProvider, connections: McpConnection[]): AgentProvider}[];
-  roleBindings?: {role: string; provider: string; environment: string; attemptDeadlineSeconds?: number; commit(input: unknown): string}[];
-  repos: { id: string; location: string; primaryAgentLimit?: number }[];
+  roleBindings?: {role: string; provider: string; environment: string; workspace?:'implementation'; attemptDeadlineSeconds?: number; commit(input: unknown): string}[];
+  repos: { id: string; location: string; primaryAgentLimit?: number; publication?:{github:string;remote:string;base:string;env?:Record<string,string>} }[];
   environments: { id: string; docker?: { image: string; binary?: string; network?: string; env?: Record<string,string> } }[];
   capabilities: {
     id: string;
