@@ -4,16 +4,17 @@ export default {
   // Replace with the deployed configuration repository's commit.
   version: 'replace-with-config-commit',
   repos: [{ id: 'example', location: '/srv/repos/example' }],
-  environments: [{ id: 'test-only' }],
+  environments: [{ id: 'test-only', docker: { image: 'node:22.22-alpine' } }],
   capabilities: [{
     id: 'test-commit',
     environment: 'test-only',
     validate(input: unknown) {
-      if (typeof input !== 'string' || !input.trim()) throw new Error('Expected a commit reference as text');
-      return input;
+      if (typeof input !== 'string' || !/^[a-f0-9]{40}$/.test(input)) throw new Error('Expected a full commit SHA');
     },
-    async run() {
-      throw new Error('Execution is not implemented yet');
+    execution: { commit(input: unknown) { return input as string; } },
+    async run(context) {
+      const result = await context.exec(['sh', '/workspace/test.sh']);
+      return { business: { passed: result.exitCode === 0, exitCode: result.exitCode } };
     },
   }],
 } satisfies Configuration;

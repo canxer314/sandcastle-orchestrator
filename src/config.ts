@@ -19,19 +19,33 @@ export async function loadConfiguration(path: string): Promise<Configuration> {
   for (const capability of config.capabilities) {
     if (!config.environments.some((env: { id: string }) => env.id === capability.environment)) throw new Error(`Unknown environment: ${capability.environment}`);
     if (typeof capability.validate !== 'function' || typeof capability.run !== 'function') throw new Error(`Missing capability validator or entrypoint: ${capability.id}`);
+    if (capability.execution !== undefined) {
+      if (!capability.execution || typeof capability.execution.commit !== 'function') throw Error(`Missing execution commit selector: ${capability.id}`);
+      const environment = config.environments.find((env: {id:string}) => env.id === capability.environment);
+      if (!environment.docker) throw Error(`Execution capability requires Docker environment: ${capability.id}`);
+      if (typeof environment.docker.image !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9._/@:-]*$/.test(environment.docker.image)) throw Error(`Invalid Docker image: ${environment.id}`);
+    }
   }
   return config;
+}
+
+export interface ExecutionContext {
+  actualSha: string;
+  attemptId: string;
+  input: unknown;
+  exec(argv: string[]): Promise<{stdout:string;stderr:string;exitCode:number}>;
 }
 
 export interface Configuration {
   version: string;
   repos: { id: string; location: string }[];
-  environments: { id: string }[];
+  environments: { id: string; docker?: { image: string } }[];
   capabilities: {
     id: string;
     environment: string;
     validate(input: unknown): unknown;
-    run: (...args: never[]) => unknown;
+    execution?: { commit(input: unknown): string };
+    run(context: ExecutionContext): unknown;
   }[];
 }
 
