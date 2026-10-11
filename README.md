@@ -198,7 +198,7 @@ pnpm start submit --socket /srv/orchestrator-data/control.sock --repo approved-t
 pnpm start show EXECUTION_ID --socket /srv/orchestrator-data/control.sock
 ```
 
-配置/记录/协议为增量兼容，旧 readonly 与独立能力路径保留。受控 CLI/socket、真实 MCP stdio 测试覆盖 dirty revision、拒绝路径、push/PR 已发生响应丢失及人工恢复。**未执行或获准真实模型、Docker 或远端写入；真实挂载、认证、网络与 Issue→Draft PR 业务质量仍待授权验收，不能引用 #19/#22 验收替代。**
+配置/记录/协议为增量兼容，旧 readonly 与独立能力路径保留。受控 CLI/socket、真实 MCP stdio 测试覆盖 dirty revision、拒绝路径、push/PR 已发生响应丢失及人工恢复。当前 repo 已完成一次获准的真实 CLI/socket、provider、Docker、MCP、普通推送与 Draft PR 样例，独立核对发布 tree 与测试 tree 一致，见 [#24 真实验收记录](docs/issue-24-real-acceptance.md)。该样例仅修改注释，不证明一般实现任务质量；真实响应丢失、取消等故障未在本次验证，不引用 #19/#22 验收替代。
 
 ## 取消与人工恢复
 
