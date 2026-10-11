@@ -11,7 +11,8 @@ import { constants } from 'node:fs';
 import { serviceLog } from './service-log.js';
 import { loadConfiguration, type Submission } from './config.js';
 
-export async function serve(data: string, configPath: string) {
+export async function serve(data: string, configPath: string, maintenanceMode = 'normal') {
+  if (!['normal', 'paused', 'restore'].includes(maintenanceMode)) throw Error('Invalid startup maintenance mode');
   const config = await loadConfiguration(configPath);
   await checkDataSeparation(data, configPath, config);
   process.umask(0o077);
@@ -21,6 +22,7 @@ export async function serve(data: string, configPath: string) {
   let records: Records;
   try {
     records = new Records(join(data, 'records.sqlite'));
+    records.startMaintenance(maintenanceMode);
   } catch (error) {
     releaseLock();
     throw error;
@@ -32,7 +34,7 @@ export async function serve(data: string, configPath: string) {
   };
   let closing = false;
   const dispatch = (newDeterministicId?: string) => {
-    if (closing) return;
+    if (closing || records.maintenance().startsPaused) return;
     // ponytail: scan persisted records in the single control writer; add indexed
     // queue queries only if the local history makes this scan expensive.
     const details = records.list();
@@ -77,7 +79,17 @@ export async function serve(data: string, configPath: string) {
       const message = JSON.parse(body);
       let result;
       switch (message?.command) {
+        case 'maintenance':
+          result = records.maintenance();
+          break;
+        case 'pause':
+        case 'resume':
+        case 'restore-review':
+          result = records.manageMaintenance(message.command, message.target ?? 'all', {source:message.source, reason:message.reason, handling:message.handling, externalResults:message.externalResults, backupPoint:message.backupPoint});
+          if (message.command === 'resume') dispatch();
+          break;
         case 'submit':
+          if (records.maintenance().admissionPaused) throw Error('Admission is paused');
           if (!message.submission || !Object.hasOwn(message.submission, 'input')) throw new Error('Missing input');
           for (const field of ['repo', 'capability', 'source']) {
             if (typeof message.submission[field] !== 'string' || !message.submission[field]) throw new Error(`Invalid ${field}`);

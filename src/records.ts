@@ -18,6 +18,7 @@ export class Records {
     this.db = new DatabaseSync(path);
     this.db.exec(`
       PRAGMA foreign_keys = ON;
+      CREATE TABLE IF NOT EXISTS maintenance (id INTEGER PRIMARY KEY CHECK (id = 1), facts TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS requests (
         id TEXT PRIMARY KEY, repo TEXT NOT NULL, capability TEXT NOT NULL,
         input TEXT NOT NULL, source TEXT NOT NULL, created_at TEXT NOT NULL,
@@ -46,6 +47,53 @@ export class Records {
     for (const row of this.db.prepare("SELECT id FROM attempts WHERE run_state IN ('starting', 'running')").all()) this.priorAttempts.add(String(row.id));
   }
 
+  maintenance(): { admissionPaused: boolean; startsPaused: boolean; restorePending?: boolean; restoreReview?: Record<string, string>; history: Record<string, string>[] } {
+    const row = this.db.prepare('SELECT facts FROM maintenance WHERE id = 1').get();
+    return row ? JSON.parse(String(row.facts)) : { admissionPaused: false, startsPaused: false, history: [] };
+  }
+
+  manageMaintenance(command: string, target: string, audit: Record<string, unknown>) {
+    if (!['pause', 'resume', 'restore-review'].includes(command)) throw Error('Invalid maintenance command');
+    for (const field of ['source', 'reason']) if (typeof audit[field] !== 'string' || !audit[field].trim()) throw Error(`Missing ${field}`);
+    if (!['all', 'admission', 'starts'].includes(target)) throw Error('Invalid maintenance target');
+    const state = this.maintenance();
+    const entry = { command, target, at: new Date().toISOString() } as Record<string, string>;
+    for (const field of ['source', 'reason', 'handling', 'externalResults', 'backupPoint']) {
+      if (audit[field] !== undefined) {
+        if (typeof audit[field] !== 'string' || !audit[field].trim()) throw Error(`Invalid ${field}`);
+        entry[field] = audit[field];
+      }
+    }
+    if (command === 'restore-review') {
+      for (const field of ['backupPoint', 'handling', 'externalResults']) if (!entry[field]) throw Error(`Missing ${field}`);
+      if (!state.startsPaused || !state.admissionPaused) throw Error('Pause admission and starts before restore review');
+      state.restoreReview = entry;
+    } else {
+      if (command === 'resume' && state.restorePending && !state.restoreReview) throw Error('Restore review required before resume');
+      const paused = command === 'pause';
+      if (target !== 'starts') state.admissionPaused = paused;
+      if (target !== 'admission') state.startsPaused = paused;
+    }
+    state.history.push(entry);
+    this.saveMaintenance(state);
+    return state;
+  }
+
+  private saveMaintenance(state: ReturnType<Records['maintenance']>) {
+    this.db.prepare('INSERT INTO maintenance VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET facts = excluded.facts').run(JSON.stringify(state));
+  }
+
+  startMaintenance(mode: string) {
+    if (!['normal', 'paused', 'restore'].includes(mode)) throw Error('Invalid startup maintenance mode');
+    if (mode === 'normal') return;
+    const state = this.manageMaintenance('pause', 'all', {source:'startup', reason:mode === 'restore' ? 'Restored backup requires external side-effect review' : 'Paused service startup'});
+    if (mode === 'restore') {
+      state.restorePending = true;
+      delete state.restoreReview;
+      this.saveMaintenance(state);
+    }
+  }
+
   private existing(submission: Submission, originalInput: string) {
     if (submission.deduplicationKey === undefined) return;
     const row = this.db.prepare('SELECT request_id FROM deduplication_keys WHERE source = ? AND key = ?')
@@ -71,6 +119,7 @@ export class Records {
     } catch (error) {
       rejection = error instanceof Error ? error.message : 'Invalid input';
     }
+    if (this.maintenance().admissionPaused) throw Error('Admission is paused');
     const requestId = randomUUID();
     const executionId = randomUUID();
     this.db.exec('BEGIN IMMEDIATE');

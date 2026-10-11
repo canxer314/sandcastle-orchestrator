@@ -15,6 +15,52 @@ pnpm start serve --data /srv/orchestrator-data --config ./examples/config.ts
 
 运行目录必须专供本应用使用，与配置及目标 checkout 分开，不提交到 Git。启动前检查应用、配置目录和登记的 checkout 路径，拒绝包含关系及符号链接重合，检查失败不修改目录权限。repo 位置当前是本地 checkout 路径。服务将目录权限设为 `0700`，socket 和新建文件设为 `0600`。同一目录只能启动一个控制实例，内核文件锁在服务崩溃后释放。无需也不得通过删除锁文件恢复。
 
+## 维护窗口、备份与恢复
+
+管理入口新增 `maintenance` 查询，`pause`／`resume --target admission|starts|all`（默认 all），均要求 `--source`、`--reason`。暂停状态及操作历史保存在 SQLite，重启不自动恢复。`serve --maintenance paused` 在首次 dispatch 前暂停接纳与启动；恢复旧备份必须使用 `serve --maintenance restore`，每次建立新的核对门槛。暂停启动不暂停或 kill 已有 attempt，也不表示它已停止。查询、协作取消和人工核对仍可用；优先等待 `list/show` 中执行可信结束，不能等时用现有 `cancel`、`confirm-stop`、`resolve`，未确认停止仍为 unknown，不释放额度、不替代执行。不要关闭 harness 或容器制造结束。
+
+```sh
+pnpm start pause --socket "$DATA/control.sock" --target all --source operator --reason 'pre-upgrade backup'
+pnpm start maintenance --socket "$DATA/control.sock"
+pnpm start list --socket "$DATA/control.sock"
+```
+
+人工确认没有运行中或未确认的外部执行后，停止控制服务（只发 SIGTERM 给控制进程，不发给 harness），用主机工具做一致的离线备份。不能只复制在线 SQLite 主文件；若无法静止全部写入，使用 SQLite `.backup` 获得数据库快照，但日志和产物仍需单独保证一致。暂停不冻结日志，备份时不要运行 cleanup。下面是离线备份示例，`DATA`、`CONFIG_DIR`、`BACKUP` 是管理员指定、互不包含的绝对目录；配置依赖文件也应位于 CONFIG_DIR。凭据保留现有主机 secret 管理，不把环境、token、连接串写入记录或示例备份。备份目录应在独立磁盘或现有受保护的异机备份系统，示例临时磁盘不是灾备。
+
+```sh
+umask 077
+mkdir -p "$BACKUP"
+sqlite3 "$DATA/records.sqlite" ".backup '$BACKUP/records.sqlite'"
+sqlite3 "$BACKUP/records.sqlite" 'PRAGMA integrity_check;'
+tar --exclude=control.sock --exclude=control.lock --exclude=records.sqlite --exclude=records.sqlite-wal --exclude=records.sqlite-shm -C "$DATA" -cpf "$BACKUP/evidence.tar" .
+tar -C "$CONFIG_DIR" -cpf "$BACKUP/config.tar" .
+date -u +%FT%TZ > "$BACKUP/backup-point.txt"
+# 保存应用 commit、Node/pnpm 版本和配置 version；独立保存备份点之后的主机/远端写入审计。
+```
+
+实际频率由主机备份任务配置并记录，例如每日 02:00 UTC 加每次升级前；必须按维护窗口暂停、等待和离线一致性要求执行，不能把该示例当作已部署 timer。保留期、加密、异机复制和告警沿用现有主机工具。磁盘损坏最多恢复到可用备份点，不承诺零丢失或无人介入的恢复时间。
+
+升级前保存上述完整备份及旧应用/配置版本；在暂停状态升级依赖/应用，先 typecheck/tests，再启动 `--maintenance paused`，检查 configuration 可加载、`list/show/logs/artifact` 可读并核对已有状态，再明确 resume。本版本只新增独立 maintenance 表，不修改旧记录和配置格式，旧 socket 命令保持有效。旧程序不会执行 maintenance gate，不能用于带待核对备份的正常启动；回退时停服务、恢复匹配的旧备份与配置、核对外部副作用后才启动旧程序。未来格式变化必须单独说明兼容和恢复方案，不能假定旧程序可读新数据；本应用不建设自动迁移/回滚平台，不删除现有迁移和 rollback。
+
+恢复到新建隔离目录，保留故障现场和备份之后的独立审计；不覆盖仍在使用的 data、不复制 socket/lock。恢复配置目录与产物，验证数据库 integrity_check，然后以 restore 模式启动，在任何新执行前核对备份之后的执行、子 Agent、工具、容器及远端写入（数据库缺失的执行也要靠主机/远端审计找回），取消不再适用的旧排队请求，必要时人工确认停止／resolve。不确定就保持暂停。
+
+```sh
+mkdir -p "$RESTORED_DATA" "$RESTORED_CONFIG"
+cp "$BACKUP/records.sqlite" "$RESTORED_DATA/records.sqlite"
+tar -C "$RESTORED_DATA" -xpf "$BACKUP/evidence.tar"
+tar -C "$RESTORED_CONFIG" -xpf "$BACKUP/config.tar"
+pnpm start serve --data "$RESTORED_DATA" --config "$RESTORED_CONFIG/config.ts" --maintenance restore
+# 在另一个终端检查 list/show/logs/artifact、配置版本和独立外部审计。
+pnpm start restore-review --socket "$RESTORED_DATA/control.sock" --source operator \
+  --reason 'post-backup audit compared' --backup-point '2026-10-11T00:00:00Z' \
+  --handling 'stale queue cancelled; unknown executions reconciled' --external-results 'host and remote audit checked; describe actual results'
+pnpm start resume --socket "$RESTORED_DATA/control.sock" --source operator --reason 'review accepted'
+```
+
+`restore-review` 要求接纳和启动都暂停，要求 backup-point、handling、external-results 非空；它保存人工核对，不验证操作者描述的真实性，也不自动 resume。未记录核对前拒绝 resume。恢复无法自动检测，操作者必须使用 restore 启动模式。核对后排队 Agent 在显式恢复时按现有 quota 启动；历史确定性排队工作仍按原规则只在显式 retry 时执行。每次演练记录实际频率配置、快照时间、恢复耗时、验证项和介入条件；真实模型/容器与部署验收另行授权。
+
+实际受控本地演练（2026-10-11）：频率配置为手动按需、每次受控升级前，无生产 timer。备份点 `2026-10-11T12:51:50.228Z`；从复制 SQLite／解包 config 与产物，到服务 restore 启动、管理入口读取记录／logs／report.txt、拒绝提前恢复、取消陈旧 queue、记录核对并恢复共 576 ms（临时本地数据，不是 RTO 承诺）。使用真实 `sqlite3 .backup`、`integrity_check`、`tar`，Agent／Docker 由受控替身提供；人工介入包括暂停、等待已有执行结束、离线备份恢复、核对证据与外部副作用说明、取消 queue 和明确 resume。未验证真实模型、真实容器、生产部署、定时任务、异机复制、磁盘损坏或大数据恢复耗时。可复跑 `pnpm test tests/quota.test.ts -t 'external SQLite' --disableConsoleIntercept --reporter=verbose`；临时目录在演练后删除。
+
 ## 提交与查询
 
 CLI 只通过 Unix socket 操作控制服务，服务不可用就失败，不直接打开数据库。所有命令输出 JSON，错误写入 stderr 并返回非零退出码。

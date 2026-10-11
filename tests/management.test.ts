@@ -6,6 +6,33 @@ import { join, resolve } from 'node:path';
 import { once } from 'node:events';
 import { afterEach, expect, test } from 'vitest';
 
+test('maintenance pause survives restart and requires explicit resume', async () => {
+  const f = await fixture(); const child = await start(f);
+  const paused = await cli(['pause', '--socket', f.socket, '--target', 'all', '--source', 'operator', '--reason', 'backup window']);
+  expect(paused.code, paused.stderr).toBe(0);
+  expect(JSON.parse(paused.stdout)).toMatchObject({ admissionPaused: true, startsPaused: true });
+  const rejected = await cli(['submit', '--socket', f.socket, '--repo', 'alpha', '--capability', 'test-commit', '--input', '"sha"', '--source', 'manual']);
+  expect(rejected.code).toBe(1);
+  expect((await socketCall(f.socket, { command: 'list' })).body).toEqual([]);
+  await stop(child); await start(f);
+  expect((await socketCall(f.socket, { command: 'maintenance' })).body).toMatchObject({ admissionPaused: true, startsPaused: true });
+  expect((await cli(['resume', '--socket', f.socket, '--source', 'operator', '--reason', 'checks passed'])).code).toBe(0);
+  expect((await socketCall(f.socket, { command: 'maintenance' })).body).toMatchObject({ admissionPaused: false, startsPaused: false });
+});
+
+test('restore startup requires persisted side-effect review before explicit resume', async () => {
+  const f = await fixture(); const child = await start(f, 'restore');
+  expect((await socketCall(f.socket, {command:'maintenance'})).body).toMatchObject({admissionPaused:true,startsPaused:true,restorePending:true});
+  expect((await socketCall(f.socket, {command:'resume',source:'operator',reason:'too soon'})).status).toBe(400);
+  expect((await socketCall(f.socket, {command:'restore-review',source:'operator',reason:'checked'})).status).toBe(400);
+  const reviewed = await cli(['restore-review','--socket',f.socket,'--source','operator','--reason','compared host audit','--backup-point','2026-10-11T00:00:00Z','--handling','cancel stale queue','--external-results','no outstanding writes; checked host audit']);
+  expect(reviewed.code,reviewed.stderr).toBe(0);
+  expect((await socketCall(f.socket, {command:'maintenance'})).body.startsPaused).toBe(true);
+  await stop(child); await start(f);
+  expect((await socketCall(f.socket, {command:'maintenance'})).body.restoreReview.externalResults).toBe('no outstanding writes; checked host audit');
+  expect((await cli(['resume','--socket',f.socket,'--source','operator','--reason','review accepted'])).code).toBe(0);
+});
+
 const root = resolve(import.meta.dirname, '..');
 const children = new Set<ChildProcess>();
 const directories: string[] = [];
@@ -57,8 +84,8 @@ async function fixture() {
   return { dir, config, socket: join(dir, 'control.sock') };
 }
 
-async function start(f: Awaited<ReturnType<typeof fixture>>) {
-  const child = spawn(process.execPath, ['--import', 'tsx', 'src/cli.ts', 'serve', '--data', f.dir, '--config', f.config], { cwd: root });
+async function start(f: Awaited<ReturnType<typeof fixture>>, maintenance?: string) {
+  const child = spawn(process.execPath, ['--import', 'tsx', 'src/cli.ts', 'serve', '--data', f.dir, '--config', f.config, ...(maintenance ? ['--maintenance', maintenance] : [])], { cwd: root });
   children.add(child);
   let output = '';
   let errors = '';
