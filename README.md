@@ -78,7 +78,7 @@ pnpm start logs EXECUTION_ID --attempt ATTEMPT_ID --socket /srv/orchestrator-dat
 
 ## 当前尝试 MCP 测试工具（#22）
 
-使用官方 stable `@modelcontextprotocol/server/client` 2.3.1 与 Zod 4.6.5。只为显式 opt-in 的 Claude Code provider 注入 `--strict-mcp-config --mcp-config /orchestrator-mcp/config.json`；Sandcastle 没有原生 MCP 配置字段，通过公开 `buildPrintCommand` 保留原 stdin/parser/session 契约。其他 provider 的 MCP 未支持，不冒充兼容。旧 provider、描述型 tools、配置、CLI/socket 协议与历史记录保持不变。
+使用官方 stable `@modelcontextprotocol/server/client` 2.3.1 与 Zod 4.6.5。只为显式 opt-in 的 Claude Code provider 注入 `--strict-mcp-config --mcp-config /orchestrator-mcp/config.json`；Sandcastle 没有原生 MCP 配置字段，通过公开 `buildPrintCommand` 保留原 stdin/parser/session 契约。其他 provider 的 MCP 未支持，不冒充兼容。旧 provider、描述型 tools、配置、CLI/socket 协议与历史记录保持不变。描述型 tools 仍允许空 description、空 ID 与重复 ID，角色说明仍取首个匹配项；仅可执行 tools 要求非空 description、合法 MCP ID，且 ID 不可与任何其他工具重名。
 
 ```ts
 import { z } from 'zod';

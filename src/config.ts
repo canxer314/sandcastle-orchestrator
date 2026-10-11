@@ -29,19 +29,16 @@ export async function loadConfiguration(path: string): Promise<Configuration> {
       if (typeof environment.docker.image !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9._/@:-]*$/.test(environment.docker.image)) throw Error(`Invalid Docker image: ${environment.id}`);
     }
   }
-  if(config.tools!==undefined && !Array.isArray(config.tools))throw Error('Invalid tools');
-  const toolIds=new Set<string>();
-  for(const tool of config.tools ?? []) {
-    if(!tool || typeof tool.id!=='string' || !tool.id || toolIds.has(tool.id) || typeof tool.description!=='string' || !tool.description)throw Error('Invalid or duplicate tool');
-    toolIds.add(tool.id);
-    if(tool.capability!==undefined) {
+  for(const tool of Array.isArray(config.tools) ? config.tools : []) {
+    if(tool?.capability!==undefined) {
+      if(typeof tool.id!=='string' || !tool.id || typeof tool.description!=='string' || !tool.description || config.tools.filter((other:{id?:unknown}|null)=>other?.id===tool.id).length!==1)throw Error('Invalid or duplicate tool');
       const capability=config.capabilities.find((c:{id:string})=>c.id===tool.capability);
       if(capability?.execution?.workspace!=='readonly')throw Error('Executable tools require capability.execution.workspace: readonly');
       if(!/^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(tool.id) || tool.id==='read_tool_file' || !capability?.execution || !tool.inputSchema || typeof tool.inputSchema.strict!=='function')throw Error('Invalid executable tool binding');
       tool.inputSchema=tool.inputSchema.strict();
       const schema=z.toJSONSchema(tool.inputSchema) as {properties?:Record<string,unknown>};
       if(['repo','attemptId','actualSha','workspace','environment','credentials'].some(key=>schema.properties?.[key]))throw Error('Tool schema must not accept trusted identity or credentials');
-    } else if(tool.inputSchema!==undefined)throw Error('Tool schema requires explicit capability');
+    } else if(tool?.inputSchema!==undefined)throw Error('Tool schema requires explicit capability');
   }
   if (config.roles !== undefined && !Array.isArray(config.roles)) throw Error('Invalid roles');
   for (const role of config.roles ?? []) {
