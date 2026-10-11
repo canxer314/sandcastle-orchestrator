@@ -1,5 +1,6 @@
 import { createServer } from 'node:http';
-import { appendFile, chmod, mkdir, writeFile } from 'node:fs/promises';
+import { constants } from 'node:fs';
+import { chmod, mkdir, open, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { Configuration } from './config.js';
 
@@ -16,6 +17,7 @@ try {
 `);
   let accepting=true;
   let observationWrites=Promise.resolve();
+  let observationCorrupt=false;
   const handlers=new Set<Promise<void>>();
   const server=createServer((req,res)=>{
     if(!accepting){res.statusCode=503;res.end(JSON.stringify({error:'Tool facility is closing'}));return;}
@@ -32,7 +34,21 @@ try {
       // Save before delivery: model text is not a substitute for an observed result.
       // Serialize whole JSONL records, not reads: large appendFile calls can interleave.
       const observation=JSON.stringify({attemptId,actualSha,observedAt:new Date().toISOString(),tool:tool.id,input:message.input,...(error?{error}:{result})})+'\n';
-      const saved=observationWrites.then(()=>appendFile(join(artifacts,'observations.jsonl'),observation));
+      const saved=observationWrites.then(async()=>{
+        if(observationCorrupt)throw Error('Observation rollback failed');
+        // Roll back only this opened regular file, never a replacement at its path.
+        const file=await open(join(artifacts,'observations.jsonl'),constants.O_WRONLY|constants.O_APPEND|constants.O_NOFOLLOW|constants.O_NONBLOCK);
+        try {
+          const before=await file.stat();
+          if(!before.isFile())throw Error('Observation artifact is not a regular file');
+          try {await file.appendFile(observation);}
+          catch(error){
+            try {await file.truncate(before.size);}
+            catch {observationCorrupt=true;}
+            throw error;
+          }
+        } finally {await file.close();}
+      });
       observationWrites=saved.catch(()=>{}); // A failed save must not poison later writes.
       try {await saved;}
       catch {const message='Tool observation could not be saved; result not delivered';saveError(message);throw Error(message);}
