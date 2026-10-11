@@ -26,10 +26,21 @@ export async function serve(data: string, configPath: string) {
       let body = '';
       for await (const chunk of req) body += chunk;
       const message = JSON.parse(body);
-      const result = message.command === 'submit'
-        ? await records.submit(message.submission as Submission, config)
-        : message.command === 'list' ? records.list(message.repo, message.status)
-        : records.show(message.id);
+      let result;
+      switch (message?.command) {
+        case 'submit':
+          if (!message.submission || !Object.hasOwn(message.submission, 'input')) throw new Error('Missing input');
+          result = await records.submit(message.submission as Submission, config);
+          break;
+        case 'list':
+          result = records.list(message.repo, message.status);
+          break;
+        case 'show':
+          result = records.show(message.id);
+          break;
+        default:
+          throw new Error('Unknown command');
+      }
       res.setHeader('content-type', 'application/json');
       res.end(JSON.stringify(result));
     } catch (error) {

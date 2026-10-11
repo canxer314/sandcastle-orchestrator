@@ -29,6 +29,8 @@ pnpm start show REQUEST_OR_EXECUTION_ID --socket /srv/orchestrator-data/control.
 
 `--input` 是 JSON，自由文本用 JSON 字符串提交。`--source` 是来源标识，如 `manual` 或外部定时脚本名称，不能放凭据。
 
+直接调用 socket 时，提交必须包含 `input` 字段。缺少该字段是协议错误，服务返回 HTTP 400 和 `Missing input`，不建立请求或执行。显式 JSON `null` 不是缺失字段，会交给能力校验器，并按普通提交规则保存结果。未知命令返回 HTTP 400 和 `Unknown command`，不会按 `show` 查询记录。
+
 合法提交在同一个 SQLite 事务中保存请求和执行，返回 `accepted: true`、`requestId`、`executionId`。无效 repo、能力或输入在数据库可写时保存拒绝记录，返回 `accepted: false`、`requestId`、`reason`，不建立执行。校验器抛错即拒绝，即使错误消息为空，也不会建立执行。拒绝也是已记录的提交响应，退出码为 0，脚本必须检查 `accepted`。必要保存失败返回非零退出码，不返回接纳或拒绝回执。
 
 `show` 可使用请求或执行标识，包含原始输入、来源、拒绝原因、排队执行和空的尝试列表。`list` 只列执行，按提交顺序返回，可按 repo 和状态筛选。没有去重键功能，相同输入每次提交都是独立请求。所有合法请求保持 `queued`，重启后仍可查询，不会自动消费。
