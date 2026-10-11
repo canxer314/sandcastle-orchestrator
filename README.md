@@ -93,7 +93,7 @@ pnpm start artifact EXECUTION_ID --name observations.jsonl --socket /srv/orchest
 pnpm start artifact EXECUTION_ID --name report.txt --offset 0 --socket /srv/orchestrator-data/control.sock
 ```
 
-工具观察独立写入每次尝试的 `observations.jsonl`，包含工具、参数、观察时间、attempt/实际 SHA、结果或故障；必要文件保存成功后才回复 Agent，失败不交付结果，`show.toolObservationError` 明示缺口。任一工具观察保存失败后，即使 Agent 正常退出并返回限制说明，该尝试仍为 `unknown`，保留实际 `exitCode`/`stopConfirmation`、原始报告和来源引用，不发布 `business`、`businessReference` 或 `contract`；未核对处理前，即使超过 30 天也不清理其日志/报告。普通工具调用失败但故障观察成功保存时，仍可正常完成并报告限制。模型报告另存 `report.txt`，建议不自动变成修复、请求、评论或 Issue。旧尝试事实/报告不被 retry 或来源变化改写；重试可能得到新版本证据，其 digest/时间另行记录。报告应区分观察与推断，证据不足或工具故障应表达限制，不能把“没有证据”写成“没有问题”。
+工具观察独立写入每次尝试的 `observations.jsonl`，包含工具、参数、观察时间、attempt/实际 SHA、结果或故障；必要文件保存成功后才回复 Agent，失败不交付结果，`show.toolObservationError` 明示缺口。Agent 等待返回后，工具设施停止接纳新调用并等待已接纳的 handler（包括客户端已断开的调用）实际结束，再发布最终状态与业务结果；等待期间原始报告可读，但不发布完成或停止确认，不强杀或超时冒充工具结束。设施关闭不证明未知 Agent 已停止。任一工具观察保存失败后，即使 Agent 正常退出并返回限制说明，该尝试仍为 `unknown`，保留实际 `exitCode`/`stopConfirmation`、原始报告和来源引用，不发布 `business`、`businessReference` 或 `contract`；未核对处理前，即使超过 30 天也不清理其日志/报告。普通工具调用失败但故障观察成功保存时，仍可正常完成并报告限制。模型报告另存 `report.txt`，建议不自动变成修复、请求、评论或 Issue。旧尝试事实/报告不被 retry 或来源变化改写；重试可能得到新版本证据，其 digest/时间另行记录。报告应区分观察与推断，证据不足或工具故障应表达限制，不能把“没有证据”写成“没有问题”。
 
 新角色输出与校验后的业务值各超过 64 KiB 时文件化：`output` 只保留不超过 65536 UTF-8 字节、不会拆开 Unicode 字符的预览，仅实际省略内容时设置 `outputTruncated:true`，完整模型文本见 `report` 引用；大的业务值不变类型或伪装为内联 `business`，改用显式 `businessReference` 指向 `business.json`（JSON 编码原校验返回值）。小报告的 `output/business` 与历史内联记录保持原形状。取消请求后的完成不发布 `business`、`businessReference` 或 `contract`；原始 `report.txt` 与工具观察仍可读取。`report.complete` 表示有 CLI 结束证据，`truncated:false` 表示保存的输出未裁剪，不保证业务证据充分。不存在输出不宣称有报告；文件缺失/非普通文件读取失败。
 

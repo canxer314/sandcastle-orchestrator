@@ -14,7 +14,11 @@ try {
  const result=await new Promise((resolve,reject)=>{const req=request({socketPath:process.env.ORCHESTRATOR_TOOL_SOCKET ?? '/orchestrator-tools/tools.sock',method:'POST',path:'/'},res=>{res.setEncoding('utf8');let body='';res.on('data',chunk=>body+=chunk);res.on('end',()=>{try{const value=JSON.parse(body);if(res.statusCode!==200)reject(Error(value.error));else resolve(value);}catch(error){reject(error);}});});req.on('error',reject);req.end(JSON.stringify({tool,input}));});console.log(JSON.stringify(result));
 } catch(error){console.error(JSON.stringify({error:error.message}));process.exitCode=1;}
 `);
-  const server=createServer(async(req,res)=>{
+  let accepting=true;
+  const handlers=new Set<Promise<void>>();
+  const server=createServer((req,res)=>{
+    if(!accepting){res.statusCode=503;res.end(JSON.stringify({error:'Tool facility is closing'}));return;}
+    const handling=(async()=>{
     res.setHeader('content-type','application/json');
     try {
       const chunks:Buffer[]=[];let bytes=0;for await(const chunk of req){bytes+=chunk.length;if(bytes>65536)throw Error('Tool request exceeds 64 KiB');chunks.push(chunk);}
@@ -30,9 +34,24 @@ try {
       if(error)throw Error(error);
       res.end(JSON.stringify(result));
     }catch(error){res.statusCode=400;res.end(JSON.stringify({error:error instanceof Error?error.message:'Tool operation failed'}));}
+    })();
+    handlers.add(handling);
+    void handling.then(()=>handlers.delete(handling),()=>handlers.delete(handling));
   });
   const socket=join(directory,'tools.sock');
   await new Promise<void>((resolve,reject)=>{server.once('error',reject);server.listen(socket,resolve);});
   await chmod(socket,0o600);
-  return {close:()=>new Promise<void>(resolve=>server.close(()=>resolve()))};
+  let closing:Promise<void>|undefined;
+  return {close:()=>{
+    if(closing)return closing;
+    accepting=false;
+    // HTTP close waits for responses, not async handlers after a client disconnects.
+    const closed=new Promise<Error|undefined>(resolve=>server.close(resolve));
+    closing=(async()=>{
+      await Promise.all(handlers);
+      const error=await closed;
+      if(error)throw error;
+    })();
+    return closing;
+  }};
 }

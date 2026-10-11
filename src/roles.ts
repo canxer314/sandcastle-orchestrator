@@ -26,6 +26,7 @@ export async function executeRole(records:Records, config:Configuration, executi
   const directory=join(data,'attempts',attempt);const workspace=join(directory,'repo');const container=`orch-${attempt}-1`;const branch=`orch/${attempt}`;
   let launched=false;
   let toolObservationError:string|undefined;
+  let lifecycleFacts:Record<string,unknown>={};
   let toolServer:Awaited<ReturnType<typeof serveRoleTools>>|undefined;
   const callableTools=role.tools.map(id=>config.tools!.find(t=>t.id===id)!).filter(t=>t.read);
   const toolDirectory=join(directory,'tools');
@@ -79,6 +80,7 @@ export async function executeRole(records:Records, config:Configuration, executi
       output=bytes.subarray(0,end).toString('utf8');
     }
     const facts={...result,output,...(largeOutput?{outputTruncated:true}:{}),endedAt:new Date().toISOString(),logs:{complete:result.exitCode!==null && !result.error},stopConfirmation:result.exitCode===null?undefined:{kind:'agent-exit-marker',confirmedAt:new Date().toISOString(),exitCode:result.exitCode}};
+    lifecycleFacts=facts;
     // Keep lifecycle evidence available to every storage-failure path; stopConfirmation
     // is saved with the final state because it also closes the mutable-attempt guard.
     let report:object|undefined;
@@ -91,8 +93,10 @@ export async function executeRole(records:Records, config:Configuration, executi
         records.updateAttempt(attempt,{report,artifacts:[...artifacts,{name:'report.txt',attemptId:attempt,actualSha,kind:'model-output'}]});
       }
     }catch(error){
+      await toolServer?.close();
       try {records.finishAttempt(attempt,'unknown',{...facts,report:{name:'report.txt',missing:true,complete:false},reportPersistenceError:'Required model report could not be saved'});}catch(saveError){records.markUnresolved(attempt,saveError);}return;
     }
+    await toolServer?.close();
     if(toolObservationError){try{records.finishAttempt(attempt,'unknown',{...facts,toolObservationError});}catch(saveError){records.markUnresolved(attempt,saveError);}return;}
     if(result.exitCode===null){records.finishAttempt(attempt,'unknown',{...facts,error:result.error ?? 'Agent exit evidence unavailable'});return;}
     let parsed:unknown;
@@ -111,6 +115,9 @@ export async function executeRole(records:Records, config:Configuration, executi
     }catch(error){
       try {records.finishAttempt(attempt,'unknown',{...facts,reportPersistenceError:'Required validated report or completion record could not be saved'});}catch(saveError){records.markUnresolved(attempt,saveError);}
     }
-  }catch(error){try{records.finishAttempt(attempt,launched?'unknown':'start_failed',{error:error instanceof Error?error.message:'Role launch failed'})}catch(saveError){records.markUnresolved(attempt,saveError)}}
-  finally{if(toolServer)await toolServer.close();records.endLive(attempt)}
+  }catch(error){
+    try{await toolServer?.close();}catch(closeError){error=closeError;}
+    try{records.finishAttempt(attempt,launched?'unknown':'start_failed',{...lifecycleFacts,error:error instanceof Error?error.message:'Role launch failed',...(toolObservationError?{toolObservationError}:{})})}catch(saveError){records.markUnresolved(attempt,saveError)}
+  }
+  finally{try{await toolServer?.close();}finally{records.endLive(attempt)}}
 }
