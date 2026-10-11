@@ -1,5 +1,8 @@
 import { parseArgs } from 'node:util';
 import { call, serve } from './control.js';
+import { serviceLog } from './service-log.js';
+
+let serving = false;
 
 try {
   const { values, positionals } = parseArgs({
@@ -15,6 +18,11 @@ try {
     return value;
   };
   if (command === 'serve') {
+    serving = true;
+    process.on('uncaughtException', error => {
+      serviceLog('service_crash', error);
+      process.exit(1); // Do not continue after an uncaught fault or claim children stopped.
+    });
     await serve(required('data'), required('config'));
   } else {
     if(command==='artifact' && values.offset!==undefined && !/^\d+$/.test(values.offset))throw Error('Invalid --offset');
@@ -26,6 +34,7 @@ try {
     console.log(JSON.stringify(await call(socket, message)));
   }
 } catch (error) {
-  console.error(JSON.stringify({ error: error instanceof Error ? error.message : 'Command failed' }));
+  if (serving) serviceLog('service_failure', error);
+  else console.error(JSON.stringify({ error: error instanceof Error ? error.message : 'Command failed' }));
   process.exitCode = 1;
 }
