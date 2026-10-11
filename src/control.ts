@@ -1,8 +1,8 @@
 import { createServer, request } from 'node:http';
-import { mkdir, chmod, rm, lstat } from 'node:fs/promises';
+import { mkdir, chmod, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { acquireControlLock } from './lock.js';
-import { checkDataSeparation } from './paths.js';
+import { checkDataSeparation, checkToolEvidenceDirectories } from './paths.js';
 import { Records } from './records.js';
 import { executeRole } from './roles.js';
 import { execute, readArtifact, cancelExecution } from './execution.js';
@@ -78,12 +78,7 @@ export async function serve(data: string, configPath: string) {
             if (message.call !== undefined) result = {...result,callId:message.call};
             break;
           }
-          if (message.call !== undefined) {
-            for (const path of [data,join(data,'attempts'),join(data,'attempts',String(attempt.id)),join(data,'attempts',String(attempt.id),'tools'),directory,...(message.command === 'artifact' ? [join(directory,'artifacts')] : [])]) {
-              try { if (!(await lstat(path)).isDirectory()) throw Error('Tool evidence path is not a physical directory'); }
-              catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
-            }
-          }
+          if (message.call !== undefined) await checkToolEvidenceDirectories(join(data,'attempts',String(attempt.id)),message.call,message.command === 'artifact',true);
           if (message.command === 'logs') {
             const read = async (stream: string) => {
               try {

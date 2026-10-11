@@ -1,13 +1,14 @@
 import { createServer } from 'node:net';
 import { constants } from 'node:fs';
 import { z } from 'zod';
-import { chmod, mkdir, writeFile, open, lstat } from 'node:fs/promises';
-import { join, dirname } from 'node:path';
+import { chmod, mkdir, writeFile, open } from 'node:fs/promises';
+import { join } from 'node:path';
 import { McpServer } from '@modelcontextprotocol/server';
 import { serveStdio, StdioServerTransport } from '@modelcontextprotocol/server/stdio';
 import type { Configuration } from './config.js';
 import type { Records } from './records.js';
 import { execute } from './execution.js';
+import { checkToolEvidenceDirectories } from './paths.js';
 
 // The container needs only Node: all validation, business code and Docker execution stay host-side.
 const preview=(value:string | undefined,bytes:number)=>{
@@ -17,7 +18,7 @@ const preview=(value:string | undefined,bytes:number)=>{
   return text;
 };
 const bridge=`const {connect}=require('node:net');const s=connect(process.argv[2]);s.on('error',()=>process.exit(1));s.on('close',()=>process.exit());process.stdin.pipe(s);s.pipe(process.stdout);`;
-export async function openRoleTools(records:Records,config:Configuration,executionId:string,attemptId:string,directory:string,workspace:string,actualSha:string,toolIds:string[]) {
+export async function openRoleTools(records:Records,config:Configuration,{executionId,attemptId,directory,workspace,actualSha,toolIds}:{executionId:string;attemptId:string;directory:string;workspace:string;actualSha:string;toolIds:string[]}) {
   const deployed=config.tools?.filter(t=>toolIds.includes(t.id) && t.capability) ?? [];
   if(!deployed.length)return;
   const mcpDirectory=join(directory,'mcp');await mkdir(mcpDirectory,{mode:0o700});
@@ -52,7 +53,7 @@ export async function openRoleTools(records:Records,config:Configuration,executi
         const log=kind!=='artifact' && ['stdout.log','stderr.log'].includes(name);const result=kind!=='artifact' && name==='result.json';
         if(!log && !result && !facts.artifacts?.some((a:{name:string})=>a.name===name))throw Error('Artifact not registered');
         const path=join(directory,'tools',callId,...(log || result?[]:['artifacts']),name);
-        for(const parent of [dirname(dirname(directory)),dirname(directory),directory,join(directory,'tools'),join(directory,'tools',callId),...(!log && !result?[join(directory,'tools',callId,'artifacts')]:[])])if(!(await lstat(parent)).isDirectory())throw Error('Tool evidence path is not a physical directory');
+        await checkToolEvidenceDirectories(directory,callId,!log && !result);
         const file=await open(path,constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
         try {
           const stat=await file.stat();if(!stat.isFile())throw Error('Not a regular file');
