@@ -30,6 +30,45 @@ export async function serve(data: string, configPath: string) {
     try { records.markExecutionFailure(executionId, config.version); }
     catch (saveError) { serviceLog('execution_failure_save_failed', saveError, executionId); }
   };
+  let closing = false;
+  const dispatch = (newDeterministicId?: string) => {
+    if (closing) return;
+    // ponytail: scan persisted records in the single control writer; add indexed
+    // queue queries only if the local history makes this scan expensive.
+    const details = records.list();
+    const occupied = details.flatMap(detail => detail.attempts
+      .filter(attempt => attempt.kind === 'agent' && !attempt.stopConfirmation
+        && !['completed','cancelled','resolved','start_failed'].includes(attempt.runState))
+      .map(() => String(detail.request.repo)));
+    let global = occupied.length;
+    const perRepo = new Map<string, number>();
+    for (const repo of occupied) perRepo.set(repo, (perRepo.get(repo) ?? 0) + 1);
+    for (const detail of details) {
+      if (detail.execution?.status !== 'queued') continue;
+      if (!config.repos.some(repo => repo.id === detail.request.repo)) continue;
+      const capability = config.capabilities.find(capability => capability.id === detail.request.capability);
+      const isPrimaryAgent = config.roleBindings?.some(binding => binding.role === detail.request.capability);
+      if (config.roles?.some(role => role.id === detail.request.capability) && !isPrimaryAgent) continue;
+      if (!isPrimaryAgent && (detail.execution.id !== newDeterministicId || !capability?.execution || !config.environments.find(environment => environment.id === capability.environment)?.docker)) continue;
+      if (isPrimaryAgent) {
+        const repo = config.repos.find(repo => repo.id === detail.request.repo);
+        if (!repo || global >= (config.primaryAgentLimit ?? Infinity)
+          || (perRepo.get(repo.id) ?? 0) >= (repo.primaryAgentLimit ?? 1)) continue;
+      }
+      const executionId = String(detail.execution.id);
+      // Both entrypoints save beginAttempt synchronously before their first await.
+      const execution = isPrimaryAgent ? executeRole(records, config, executionId, data) : execute(records, config, executionId, data);
+      if (isPrimaryAgent && records.show(executionId).execution?.status !== 'queued') {
+        global++;
+        perRepo.set(String(detail.request.repo), (perRepo.get(String(detail.request.repo)) ?? 0) + 1);
+      }
+      void execution.catch(error => executionFailed(executionId, error)).finally(() => {
+        if (!closing && records.show(executionId).execution?.status !== 'queued') {
+          try { dispatch(); } catch (error) { serviceLog('dispatch_failure', error); }
+        }
+      });
+    }
+  };
   const socket = join(data, 'control.sock');
   const server = createServer(async (req, res) => {
     try {
@@ -56,10 +95,7 @@ export async function serve(data: string, configPath: string) {
           }
           const submitted = await records.submit(message.submission as Submission, config);
           result = submitted.receipt;
-          if (submitted.newExecutionId) {
-            const executionId = submitted.newExecutionId;
-            void (config.roles?.some(r=>r.id===message.submission.capability) ? executeRole(records,config,executionId,data) : execute(records, config, executionId, data)).catch(error => executionFailed(executionId, error));
-          }
+          dispatch(submitted.newExecutionId);
           break;
         case 'cleanup':
           result = records.cleanup(data);
@@ -134,7 +170,7 @@ export async function serve(data: string, configPath: string) {
           }
           const audit = {source:message.source,handling:message.handling,reason:message.reason,externalResults:message.externalResults};
           result = message.command === 'confirm-stop' ? records.confirmStop(message.id,audit,message.call,message.attempt) : records.recover(message.id,audit,message.command==='retry');
-          if(message.command==='retry') void (config.roles?.some(r=>r.id===detail.request.capability) ? executeRole(records,config,String(result.execution!.id),data) : execute(records,config,String(result.execution!.id),data)).catch(error=>executionFailed(String(detail.execution!.id), error));
+          dispatch(message.command === 'retry' ? String(result.execution!.id) : undefined);
           break;
         }
         case 'show':
@@ -163,8 +199,10 @@ export async function serve(data: string, configPath: string) {
     releaseLock();
     throw error;
   }
+  dispatch();
   console.log(JSON.stringify({ ready: true, socket }));
   const shutdown = () => {
+    closing = true;
     server.close(async () => {
       records.close();
       await rm(socket, { force: true });

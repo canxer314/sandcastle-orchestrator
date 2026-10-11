@@ -15,7 +15,12 @@ export async function loadConfiguration(path: string): Promise<Configuration> {
       ids.add(item.id);
     }
   }
+  const validateLimit = (limit: unknown) => {
+    if (limit !== undefined && (typeof limit !== 'number' || !Number.isSafeInteger(limit) || limit <= 0)) throw Error('Invalid primary Agent limit');
+  };
+  validateLimit(config.primaryAgentLimit);
   for (const repo of config.repos) {
+    validateLimit(repo.primaryAgentLimit);
     if (typeof repo.location !== 'string' || !repo.location) throw new Error(`Missing repo location: ${repo.id}`);
   }
   for (const capability of config.capabilities) {
@@ -129,12 +134,13 @@ export interface ExecutionContext {
 
 export interface Configuration {
   version: string;
+  primaryAgentLimit?: number;
   roles?: Role[];
   tools?: {id:string; description:string; capability?:string; inputSchema?:ZodObject; read?(input:unknown): Promise<unknown>}[];
   mcpServices?: McpService[];
   providers?: {id: string; agent: AgentProvider; mcp?:'claude-code'; configureMcp?(agent: AgentProvider, connections: McpConnection[]): AgentProvider}[];
   roleBindings?: {role: string; provider: string; environment: string; attemptDeadlineSeconds?: number; commit(input: unknown): string}[];
-  repos: { id: string; location: string }[];
+  repos: { id: string; location: string; primaryAgentLimit?: number }[];
   environments: { id: string; docker?: { image: string; binary?: string; network?: string; env?: Record<string,string> } }[];
   capabilities: {
     id: string;
