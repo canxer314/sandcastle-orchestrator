@@ -182,3 +182,47 @@ else if(args[0]==='exec'){const text=args.at(-1);if(text.includes('ORCH_EXIT_'))
     }
   } finally {if(child.exitCode===null&&child.signalCode===null){const exited=once(child,'exit');child.kill('SIGTERM');await exited;}}
 },20000);
+
+test('CLI preserves both PR sources separately from a controlled insufficient-evidence report',async()=>{
+  const dir=await mkdtemp(join(tmpdir(),'orch-pr-pair-'));dirs.push(dir);
+  const repo=join(dir,'repo');const data=join(dir,'data');const configuration=join(dir,'config');
+  const {mkdir}=await import('node:fs/promises');await mkdir(repo);await mkdir(data);await mkdir(configuration);
+  const git=(...args:string[])=>execFileSync('git',['-C',repo,...args],{encoding:'utf8'}).trim();
+  git('init');await writeFile(join(repo,'code.txt'),'fixed');git('add','.');git('-c','user.name=Test','-c','user.email=test@example.invalid','commit','-m','fixture');const sha=git('rev-parse','HEAD');
+  const evidence=join(configuration,'snapshot.json');
+  await writeFile(evidence,JSON.stringify({version:'pair-v1',collectedAt:'2026-10-10T12:00:00Z',pullRequests:[
+    {repo:'owner/repo',number:3,url:'https://github.com/owner/repo/pull/3',updatedAt:'2026-10-10T11:00:00Z',headSha:'a'.repeat(40),body:'Validation absent in PR 3',reviews:[],diff:'validation change',missing:[],truncated:false},
+    {repo:'owner/repo',number:4,url:'https://github.com/owner/repo/pull/4',updatedAt:'2026-10-10T11:30:00Z',headSha:'b'.repeat(40),body:'PR 4 evidence incomplete',reviews:[],diff:'',missing:['diff','review threads'],truncated:true},
+  ]}));
+  const report='Controlled report: PR 3 has a validation observation. PR 4 is truncated and lacks diff/review threads; insufficient evidence for a recurring problem. Sources: https://github.com/owner/repo/pull/3 and https://github.com/owner/repo/pull/4. Scope: administrator snapshot pair-v1 only; not verified live GitHub.';
+  const docker=join(dir,'docker');
+  await writeFile(docker,`#!/usr/bin/env node
+const fs=require('node:fs');const cp=require('node:child_process');const args=process.argv.slice(2);const state=${JSON.stringify(join(dir,'mount'))};
+if(args[0]==='run'){fs.writeFileSync(state,args.find(a=>a.includes('dst=/orchestrator-tools,')).match(/src=([^,]+)/)[1]);console.log('controlled');}
+else if(args[0]==='exec'){const text=args.at(-1);if(text.includes('ORCH_EXIT_')){const mount=fs.readFileSync(state,'utf8');for(const number of [3,4])cp.execFileSync(process.execPath,[mount+'/call.mjs','pr-snapshot',JSON.stringify({number})],{env:{ORCHESTRATOR_TOOL_SOCKET:mount+'/tools.sock'},encoding:'utf8'});console.log(${JSON.stringify(report)});console.log(text.match(/ORCH_EXIT_[a-f0-9]+/)[0]+':0');}else if(text.includes('rev-parse'))console.log(${JSON.stringify(sha)});}
+`,{mode:0o700});
+  const config=join(configuration,'config.ts');
+  await writeFile(config,`import {createPrSnapshotTool,createPrAnalysisRole} from ${JSON.stringify(join(root,'src/pr-analysis.ts'))};export default {version:'pair-config',repos:[{id:'sample',location:${JSON.stringify(repo)}}],environments:[{id:'readonly',docker:{image:'controlled:image',binary:${JSON.stringify(docker)}}}],capabilities:[],tools:[createPrSnapshotTool({path:${JSON.stringify(evidence)},repo:'owner/repo',pullRequests:[3,4]})],roles:[createPrAnalysisRole({repo:'owner/repo',pullRequests:[3,4]})],providers:[{id:'controlled',agent:{name:'controlled',env:{},captureSessions:false,buildPrintCommand(){return {command:'controlled-agent'}},parseStreamLine(line){return [{type:'result',result:line}]}}}],roleBindings:[{role:'pr-analysis',provider:'controlled',environment:'readonly',commit(){return '${sha}'}}]}`);
+  const child=spawn(process.execPath,['--import','tsx','src/cli.ts','serve','--config',config,'--data',data],{cwd:root});
+  try {
+    await new Promise<void>((resolve,reject)=>{let out='';let err='';const timer=setTimeout(()=>reject(Error(err||'not ready')),10000);child.stdout.on('data',d=>{out+=d;if(out.includes('ready')){clearTimeout(timer);resolve();}});child.stderr.on('data',d=>err+=d);child.once('exit',()=>{clearTimeout(timer);reject(Error(err));});});
+    const socket=join(data,'control.sock');
+    const cli=(...args:string[])=>JSON.parse(execFileSync(process.execPath,['--import','tsx','src/cli.ts',...args,'--socket',socket],{cwd:root,encoding:'utf8'}));
+    const receipt=cli('submit','--repo','sample','--capability','pr-analysis','--source','test','--input',JSON.stringify({sha,pullRequests:[3,4]}));
+    const {call}=await import('../src/control.js');
+    await expect.poll(async()=>(await call(socket,{command:'show',id:receipt.executionId}) as any).execution.status,{timeout:10000}).toBe('completed');
+    const detail=cli('show',receipt.executionId);const attempt=detail.attempts[0];
+    expect(detail.request.input).toEqual({sha,pullRequests:[3,4]});
+    expect(attempt).toMatchObject({actualSha:sha,contract:'valid',business:report});
+    const raw=cli('artifact',receipt.executionId,'--name','report.txt');expect(Buffer.from(raw.content,'base64').toString()).toBe(report);
+    const artifact=cli('artifact',receipt.executionId,'--name','observations.jsonl');
+    const observations=Buffer.from(artifact.content,'base64').toString().trimEnd().split('\n').map(line=>JSON.parse(line));
+    expect(observations).toHaveLength(2);
+    expect(observations.map(observation=>({attemptId:observation.attemptId,actualSha:observation.actualSha,input:observation.input,source:observation.result.source,pullRequest:observation.result.pullRequest}))).toEqual([
+      {attemptId:attempt.id,actualSha:sha,input:{number:3},source:expect.objectContaining({kind:'administrator-snapshot',version:'pair-v1',collectedAt:'2026-10-10T12:00:00Z',verifiedAgainstGitHub:false}),pullRequest:expect.objectContaining({number:3,url:'https://github.com/owner/repo/pull/3',headSha:'a'.repeat(40),body:'Validation absent in PR 3',missing:[],truncated:false})},
+      {attemptId:attempt.id,actualSha:sha,input:{number:4},source:expect.objectContaining({kind:'administrator-snapshot',version:'pair-v1',collectedAt:'2026-10-10T12:00:00Z',verifiedAgainstGitHub:false}),pullRequest:expect.objectContaining({number:4,url:'https://github.com/owner/repo/pull/4',headSha:'b'.repeat(40),body:'PR 4 evidence incomplete',diff:'',missing:['diff','review threads'],truncated:true})},
+    ]);
+    expect(observations[0].result.source.contentSha256).toMatch(/^[a-f0-9]{64}$/);
+    expect(observations[1].result.source.contentSha256).toBe(observations[0].result.source.contentSha256);
+  } finally {if(child.exitCode===null&&child.signalCode===null){const exited=once(child,'exit');child.kill('SIGTERM');await exited;}}
+},20000);
