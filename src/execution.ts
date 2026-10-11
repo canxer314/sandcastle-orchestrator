@@ -42,12 +42,38 @@ export async function readArtifact(directory: string, name: string) {
   } finally {await file.close()}
 }
 
+export async function cancelExecution(records: Records, id: string) {
+  const detail = records.show(id); const attempt = detail.attempts.at(-1);
+  if (!attempt || ['completed','cancelled','resolved','start_failed'].includes(attempt.runState)) return;
+  if (!attempt.container || !/^orch-[a-f0-9-]+-\d+$/.test(attempt.container)) {
+    records.updateAttempt(String(attempt.id), {runState:'unknown', cancellationLimit:'No usable container identity; manual stop confirmation required'});
+    return;
+  }
+  try {
+    records.updateAttempt(String(attempt.id),{runState:'unknown',cancellationLimit:'Cooperative Docker stop pending; stopping is not yet confirmed'});
+    await execFileAsync('docker',['stop','--timeout','-1',attempt.container],{env:{PATH:process.env.PATH}});
+    const inspected = await execFileAsync('docker',['inspect','--format','{{json .State}}',attempt.container],{env:{PATH:process.env.PATH}});
+    const state = JSON.parse(inspected.stdout);
+    if(state.Running !== false || !['exited','created'].includes(state.Status)) throw Error('Container stop not confirmed');
+    if(records.isLive(String(attempt.id))) {
+      records.updateAttempt(String(attempt.id),{containerState:state,cancellationLimit:'Container stopped, but capability entrypoint is still live'});
+      return;
+    }
+    records.finishAttempt(String(attempt.id),'cancelled',{stopConfirmation:{kind:'docker-inspect',confirmedAt:new Date().toISOString(),containerState:state},endedAt:new Date().toISOString()});
+  } catch(error) {
+    try {records.updateAttempt(String(attempt.id),{runState:'unknown',cancellationError:error instanceof Error?error.message:'Stop failed'});}
+    catch(saveError){records.markUnresolved(String(attempt.id),saveError);}
+  }
+}
+
 export async function execute(records: Records, config: Configuration, executionId: string, data: string) {
   const detail = records.show(executionId);
   const capability = config.capabilities.find(c => c.id === detail.request.capability)!;
   const environment = config.environments.find(e => e.id === capability.environment)!;
   if (!capability.execution || !environment.docker) return;
-  const attempt = records.beginAttempt(executionId, config.version, capability.id, environment.id);
+  const commit = (detail.execution as {fixedSha?: string}).fixedSha ?? capability.execution.commit(detail.request.input);
+  if (typeof commit !== 'string' || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(commit)) throw new Error('Execution requires a full commit SHA');
+  const attempt = records.beginAttempt(executionId, config.version, capability.id, environment.id, commit);
   const directory=join(data,'attempts',attempt);
   const workspace=join(directory,'workspace'); const artifacts=join(directory,'artifacts');
   let running=false;
@@ -57,8 +83,6 @@ export async function execute(records: Records, config: Configuration, execution
   let commandNumber=0;
   let unknownEnd=false;
   try {
-    const commit = capability.execution.commit(detail.request.input);
-    if (typeof commit !== 'string' || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(commit)) throw new Error('Execution requires a full commit SHA');
     const repo = config.repos.find(r => r.id === detail.request.repo)!;
     const { stdout } = await git(repo.location, ['rev-parse', '--verify', `${commit}^{commit}`]);
     const actualSha=String(stdout).trim();
@@ -72,6 +96,8 @@ export async function execute(records: Records, config: Configuration, execution
       if(closed)throw Error('Capability entrypoint already ended');
       if(unknownEnd)throw Error('A previous command end is unknown; no further commands may start');
       if(pending)throw Error('Commands within an attempt must be awaited sequentially');
+      const current = records.show(executionId).attempts.find(a=>a.id===attempt);
+      if(!current || current.cancellation || !['starting','running'].includes(current.runState)) throw Error('Attempt is no longer allowed to start commands');
       const container=`orch-${attempt}-${++commandNumber}`;
       records.updateAttempt(attempt,{runState:'running',logs:{complete:false},container});running=true;ended=false;pending++;
       const command = new Promise<{stdout:string;stderr:string;exitCode:number}>((resolve,reject)=>{
@@ -105,6 +131,12 @@ export async function execute(records: Records, config: Configuration, execution
       tracked.catch(()=>{});
       return tracked;
     }};
+    const beforeEntrypoint = records.show(executionId).attempts.at(-1);
+    if (!beforeEntrypoint || beforeEntrypoint.id !== attempt || beforeEntrypoint.stopConfirmation || ['completed','cancelled','resolved','start_failed'].includes(beforeEntrypoint.runState)) return;
+    if (beforeEntrypoint.cancellation) {
+      records.finishAttempt(attempt,'cancelled',{stopConfirmation:{kind:'never-started',confirmedAt:new Date().toISOString()},endedAt:new Date().toISOString()});
+      return;
+    }
     let returned:unknown;
     try { returned=await capability.run(context); }
     catch(error) {
@@ -116,6 +148,7 @@ export async function execute(records: Records, config: Configuration, execution
       throw error;
     }
     finally {closed=true;}
+    if (!records.show(executionId).attempts.some(a=>a.id===attempt && (['starting','running'].includes(a.runState) || (a.runState==='unknown' && a.cancellation && records.isLive(attempt))) && !a.stopConfirmation)) return;
     if(pending || unknownEnd){records.finishAttempt(attempt,'unknown',{error:pending?'Capability returned before its command ended':'A command ended without trustworthy container end information'});return;}
     let result: {business?:unknown;artifacts?:unknown} | null = null;
     try { result = JSON.parse(JSON.stringify(returned)); }
@@ -138,5 +171,5 @@ export async function execute(records: Records, config: Configuration, execution
     try {
       records.finishAttempt(attempt,running?'unknown':'start_failed',{error:error instanceof Error?error.message:'Execution failed',endedAt:new Date().toISOString()});
     } catch(saveError) { records.markUnresolved(attempt,saveError); }
-  }
+  } finally { records.endLive(attempt); }
 }
