@@ -148,6 +148,31 @@ test.each(['sync', 'async'])('an empty %s validation error rejects the request a
   expect(JSON.parse(listed.stdout)).toEqual([]);
 });
 
+test.each([false, true])('original input survives validator mutation and restart when rejected=%s', async rejected => {
+  const f = await fixture();
+  await writeFile(f.config, `export default { version:'v1', repos:[{id:'alpha',location:'/test/alpha'}], environments:[{id:'test'}], capabilities:[{
+    id:'test-commit', environment:'test', async validate(input) {
+      input.commit = 'normalized';
+      await new Promise(r => setTimeout(r, 10));
+      input.options.push('added');
+      ${rejected ? "throw new Error('Rejected after normalization');" : ''}
+    }, run() { throw new Error('Must not execute in issue 15'); }
+  }] };`);
+  const service = await start(f);
+  const result = await cli(['submit', '--socket', f.socket, '--repo', 'alpha', '--capability', 'test-commit', '--input', '{"commit":"original","options":["submitted"]}', '--source', 'manual']);
+  expect(result.code, result.stderr).toBe(0);
+  const receipt = JSON.parse(result.stdout);
+  expect(receipt.accepted).toBe(!rejected);
+  await stop(service);
+  await start(f);
+  const detail = await cli(['show', receipt.requestId, '--socket', f.socket]);
+  expect(detail.code, detail.stderr).toBe(0);
+  expect(JSON.parse(detail.stdout)).toMatchObject({
+    request: { input: { commit: 'original', options: ['submitted'] }, source: 'manual' },
+    execution: rejected ? null : { id: receipt.executionId, status: 'queued' },
+  });
+});
+
 test('configuration file symlinks also protect the actual configuration directory', async () => {
   const f = await fixture();
   const link = join(f.dir, 'config-link.ts');
