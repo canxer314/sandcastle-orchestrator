@@ -136,9 +136,9 @@ pnpm start cleanup --socket /srv/orchestrator-data/control.sock
 
 socket 请求为 `{"command":"cleanup"}`，返回 `attempts` 中本次处理或已清理的尝试及 `status`，文件失败带 `reason`。只有整个执行已结束满 30 天、全部尝试已结束且无活跃入口、未决、停止未确认或待核对证据才清理。人工 resolve 从核对结束的记录时间起计时；旧记录缺少可信结束时间则保留，不猜测。重试排队或运行时保留该执行全部历史证据。明确启动失败且已结束的 `start_failed` 尝试，事后 cancel 仅保留取消审计，不额外要求停止确认，也不阻挡已结束重试执行的到期清理；真正取消但停止未确认的尝试仍保留。
 
-只 unlink `DATA/attempts/ID/stdout.log`、`stderr.log` 及已登记的单层普通产物文件；另清理 role 的 `context` 校验快照（仅编排器写入、从不挂载或交给 provider）。不删除整个尝试目录，不处理未登记文件、确定性能力可写 workspace、工具日志、provider session/worktree、容器或远端对象。可写 workspace 和未登记产物可能包含工具自有资源，归属无法确认时保守保留，管理员核对后另行处理。拒绝符号链接与非普通目标；没有 provider 自动清理承诺。`cleaned` 仅表示上述已确认自有可弃内容已清理，不表示本地空间全部释放。同步本地删除与单写者状态操作串行，清理不停止或强杀执行。
+只 unlink `DATA/attempts/ID/stdout.log`、`stderr.log` 及已登记的单层普通产物文件，同时清理已登记 `toolCalls` 对应的 `tools/CALL_ID/stdout.log`、`stderr.log`、`result.json` 与已登记产物；工具调用活跃、未决、需核查或停止未确认时保留整个执行证据。另清理 role 的 `context` 校验快照（仅编排器写入、从不挂载或交给 provider）。不删除整个尝试目录，不处理未登记文件、确定性能力可写 workspace、工具自有未登记文件、provider session/worktree、容器或远端对象。可写 workspace 和未登记产物可能包含工具自有资源，归属无法确认时保守保留，管理员核对后另行处理。拒绝符号链接与非普通目标；没有 provider 自动清理承诺。`cleaned` 仅表示上述已确认自有可弃内容已清理，不表示本地空间全部释放。同步本地删除与单写者状态操作串行，清理不停止或强杀执行。
 
-请求、执行、尝试、业务摘要、恢复说明及外部/session 引用保留；attempt 新增 `cleanup.status`（`cleaned`、`failed`、`unknown`）和时间/失败原因。删除前必要保存 unknown，完成后才记 cleaned；崩溃或结束保存失败保持 unknown，文件失败记 failed，重复调用可安全重试。CLI `logs/artifact` 保留原字段并增加 `availability`；已清理、清理失败或未知返回对应状态、空内容，日志 `complete:false`；没有清理记录但文件丢失返回 `unavailable`。产物仍必须已登记。`show/list` 不再将清理过的日志标为完整。
+请求、执行、尝试、业务摘要、恢复说明及外部/session 引用保留；attempt 新增 `cleanup.status`（`cleaned`、`failed`、`unknown`）和时间/失败原因。删除前必要保存 unknown，完成后才记 cleaned；崩溃或结束保存失败保持 unknown，文件失败记 failed，重复调用可安全重试。CLI `logs/artifact` 保留原字段并增加 `availability`；已清理、清理失败或未知返回对应状态、空内容，日志 `complete:false`；没有清理记录但文件丢失返回 `unavailable`。产物仍必须已登记。`show/list` 不再将清理过的尝试或工具调用日志标为完整；保留轻量 `toolCalls` 审计与外部引用。`logs/artifact --call CALL_ID`（socket 可选 `call` 字符串）查询该尝试的工具日志/已登记产物，返回同样的可用状态并附 `callId`；不传 `--call` 的旧查询协议不变。旧程序已标记 cleaned 但未清理工具文件的记录可重复 cleanup 补齐。
 
 无需表结构迁移，只增量扩展 JSON facts，旧记录及管理命令继续可用。升级前备份完整 DATA；删除不可通过数据库回退撤销。旧程序不理解 cleanup 状态，降级后不应继续提供证据查询；需要完整恢复时停止服务、核对外部事实并恢复清理前完整备份。
 

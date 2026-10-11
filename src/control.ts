@@ -1,5 +1,5 @@
 import { createServer, request } from 'node:http';
-import { mkdir, chmod, rm } from 'node:fs/promises';
+import { mkdir, chmod, rm, lstat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { acquireControlLock } from './lock.js';
 import { checkDataSeparation } from './paths.js';
@@ -66,13 +66,23 @@ export async function serve(data: string, configPath: string) {
           const detail = records.show(message.id);
           const attempt = detail.attempts.find(a => a.id === message.attempt) ?? (message.attempt ? undefined : detail.attempts.at(-1));
           if (!attempt) throw Error('Attempt not found');
-          const directory = join(data, 'attempts', String(attempt.id));
-          if (message.command === 'artifact' && !attempt.artifacts?.some((a: {name:string}) => a.name === message.name)) throw Error('Artifact not registered');
+          if (message.call !== undefined && (typeof message.call !== 'string' || !/^[1-9][0-9]*$/.test(message.call))) throw Error('Invalid tool call identifier');
+          const evidence = message.call === undefined ? attempt : attempt.toolCalls?.find((c:{id:string})=>c.id===message.call);
+          if (!evidence) throw Error('Tool call not found');
+          const directory = join(data, 'attempts', String(attempt.id),...(message.call === undefined ? [] : ['tools',message.call]));
+          if (message.command === 'artifact' && !evidence.artifacts?.some((a: {name:string}) => a.name === message.name)) throw Error('Artifact not registered');
           if (attempt.cleanup) {
             result = message.command === 'logs'
               ? {attemptId:attempt.id,actualSha:attempt.actualSha,availability:attempt.cleanup.status,cleanup:attempt.cleanup,stdout:null,stderr:null,truncated:{stdout:false,stderr:false},complete:false}
               : {attemptId:attempt.id,actualSha:attempt.actualSha,name:message.name,availability:attempt.cleanup.status,cleanup:attempt.cleanup,encoding:'base64',content:null};
+            if (message.call !== undefined) result = {...result,callId:message.call};
             break;
+          }
+          if (message.call !== undefined) {
+            for (const path of [data,join(data,'attempts'),join(data,'attempts',String(attempt.id)),join(data,'attempts',String(attempt.id),'tools'),directory,...(message.command === 'artifact' ? [join(directory,'artifacts')] : [])]) {
+              try { if (!(await lstat(path)).isDirectory()) throw Error('Tool evidence path is not a physical directory'); }
+              catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+            }
           }
           if (message.command === 'logs') {
             const read = async (stream: string) => {
@@ -87,7 +97,7 @@ export async function serve(data: string, configPath: string) {
               } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null; throw error; }
             };
             const stdout = await read('stdout'); const stderr = await read('stderr');
-            result = {attemptId:attempt.id,actualSha:attempt.actualSha,availability:stdout !== null && stderr !== null ? 'available' : 'unavailable',stdout:stdout?.text??null,stderr:stderr?.text??null,truncated:{stdout:stdout?.truncated??false,stderr:stderr?.truncated??false},complete:attempt.logs?.complete === true && stdout !== null && stderr !== null};
+            result = {attemptId:attempt.id,actualSha:attempt.actualSha,availability:stdout !== null && stderr !== null ? 'available' : 'unavailable',stdout:stdout?.text??null,stderr:stderr?.text??null,truncated:{stdout:stdout?.truncated??false,stderr:stderr?.truncated??false},complete:evidence.logs?.complete === true && stdout !== null && stderr !== null};
           } else {
             let content: string | null;
             try { content = await readArtifact(join(directory,'artifacts'),message.name); }
@@ -100,6 +110,7 @@ export async function serve(data: string, configPath: string) {
           if (current?.cleanup) result = message.command === 'logs'
             ? {attemptId:attempt.id,actualSha:attempt.actualSha,availability:current.cleanup.status,cleanup:current.cleanup,stdout:null,stderr:null,truncated:{stdout:false,stderr:false},complete:false}
             : {attemptId:attempt.id,actualSha:attempt.actualSha,name:message.name,availability:current.cleanup.status,cleanup:current.cleanup,encoding:'base64',content:null};
+          if (message.call !== undefined) result = {...result,callId:message.call};
           break;
         }
         case 'cancel':

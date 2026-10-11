@@ -107,7 +107,7 @@ export class Records {
       const facts = JSON.parse(String(a.facts));
       return {
         id: a.id, configVersion: a.config_version, capability: a.capability, environment: a.environment,
-        ...facts, ...(facts.cleanup ? {logs:{...facts.logs,complete:false}} : {}), runState: unknown ? 'unknown' : a.run_state,
+        ...facts, ...(facts.cleanup ? {logs:{...facts.logs,complete:false},...(facts.toolCalls ? {toolCalls:facts.toolCalls.map((call:Record<string,any>)=>({...call,logs:{...call.logs,complete:false}}))} : {})} : {}), runState: unknown ? 'unknown' : a.run_state,
         ...(unknown ? { persistedRunState: a.run_state, requiresAttention: true } : {}),
         location: {container:JSON.parse(String(a.facts)).container ?? null, processIdentity:null, reconnectHandle:null, limitation:'No harness process identity or reconnect handle; container name is evidence, not proof of stopping'},
         ...(this.unresolved.has(String(a.id)) ? { persistenceError: this.unresolved.get(String(a.id)) } : {}),
@@ -264,13 +264,15 @@ export class Records {
       if (!terminal.includes(String(detail.execution?.status)) || !Number.isFinite(ended)
         || now - ended < 30 * 24 * 60 * 60 * 1000
         || detail.attempts.some(a => this.isLive(String(a.id)) || !terminal.includes(a.runState) || a.requiresAttention
-          || a.persistenceError || (a.cancellation && !a.stopConfirmation && a.runState !== 'start_failed'))) continue;
+          || a.persistenceError || (a.cancellation && !a.stopConfirmation && a.runState !== 'start_failed')
+          || (a.toolCalls ?? []).some((call:Record<string,any>) => !terminal.includes(call.runState) || call.requiresAttention || call.persistenceError
+            || (call.cancellation && !call.stopConfirmation && call.runState !== 'start_failed')))) continue;
       for (const attempt of detail.attempts) {
         const id = String(attempt.id);
-        if (attempt.cleanup?.status === 'cleaned') { attempts.push({attemptId:id,status:'cleaned'}); continue; }
+        if (attempt.cleanup?.status === 'cleaned' && (attempt.toolCalls ?? []).every((call:Record<string,any>)=>call.cleanup?.status === 'cleaned')) { attempts.push({attemptId:id,status:'cleaned'}); continue; }
         const save = (cleanup: object) => {
           const row = this.db.prepare('SELECT facts FROM attempts WHERE id = ?').get(id)!;
-          this.db.prepare('UPDATE attempts SET facts = ? WHERE id = ?').run(JSON.stringify({...JSON.parse(String(row.facts)), cleanup, logs:{...attempt.logs,complete:false}}),id);
+          this.db.prepare('UPDATE attempts SET facts = ? WHERE id = ?').run(JSON.stringify({...JSON.parse(String(row.facts)), cleanup, logs:{...attempt.logs,complete:false}, ...(attempt.toolCalls ? {toolCalls:attempt.toolCalls.map((call:Record<string,any>)=>({...call,cleanup,logs:{...call.logs,complete:false}}))} : {})}),id);
         };
         save({status:'unknown',startedAt:new Date(now).toISOString()});
         try {
@@ -281,11 +283,23 @@ export class Records {
             catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
           };
           checkDirectory(data); checkDirectory(join(data,'attempts')); checkDirectory(directory);
-          const names = (attempt.artifacts ?? []).map((a: {name:string}) => a.name);
-          if (names.some((name: unknown) => typeof name !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name))) throw Error('Unsafe artifact name');
-          if (names.length) checkDirectory(join(directory,'artifacts'));
-          for (const path of [join(directory,'stdout.log'),join(directory,'stderr.log'),...names.map((name:string)=>join(directory,'artifacts',name))]) {
-            try { if (!lstatSync(path).isFile()) throw Error('Cleanup target is not a regular file'); unlinkSync(path); }
+          const targets: string[] = [];
+          for (const evidence of [attempt,...(attempt.toolCalls ?? [])]) {
+            const tool = evidence !== attempt;
+            if (tool && (typeof evidence.id !== 'string' || !/^[1-9][0-9]*$/.test(evidence.id))) throw Error('Unsafe tool call identifier');
+            const base = tool ? join(directory,'tools',evidence.id) : directory;
+            if (tool) { checkDirectory(join(directory,'tools')); checkDirectory(base); }
+            const names = (evidence.artifacts ?? []).map((a: {name:string}) => a.name);
+            if (names.some((name: unknown) => typeof name !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name))) throw Error('Unsafe artifact name');
+            if (names.length) checkDirectory(join(base,'artifacts'));
+            targets.push(join(base,'stdout.log'),join(base,'stderr.log'),...(tool ? [join(base,'result.json')] : []),...names.map((name:string)=>join(base,'artifacts',name)));
+          }
+          for (const path of targets) {
+            try { if (!lstatSync(path).isFile()) throw Error('Cleanup target is not a regular file'); }
+            catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+          }
+          for (const path of targets) {
+            try { unlinkSync(path); }
             catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
           }
           if (attempt.kind === 'agent') {

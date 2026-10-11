@@ -144,6 +144,48 @@ test('context snapshot symlinks never delete tool resources',async()=>{
  expect(await cli(f.socket,['cleanup'])).toMatchObject({attempts:[{status:'failed'}]});expect(await readFile(join(outside,'session'),'utf8')).toBe('tool session');
 });
 
+test('CLI cleanup removes owned tool evidence while retaining call audit and tool resources',async()=>{
+ const f=await fixture();const tool={id:'1',tool:'check',runState:'completed',logs:{complete:true},artifacts:[{name:'report.txt'}],business:{ok:true},externalReferences:['https://example.invalid/tool/1']};
+ await historical(f,'completed',{toolCalls:[tool]});const directory=join(f.directory,'tools','1');await mkdir(join(directory,'artifacts'),{recursive:true});
+ for(const name of ['stdout.log','stderr.log','result.json','artifacts/report.txt','artifacts/private.txt'])await writeFile(join(directory,name),name);
+ await start(f);
+ expect(await cli(f.socket,['logs','execution','--call','1'])).toMatchObject({callId:'1',availability:'available',stdout:'stdout.log',stderr:'stderr.log',complete:true});
+ expect(await cli(f.socket,['artifact','execution','--call','1','--name','report.txt'])).toMatchObject({callId:'1',availability:'available',content:Buffer.from('artifacts/report.txt').toString('base64')});
+ expect(await cli(f.socket,['cleanup'])).toMatchObject({attempts:[{status:'cleaned'}]});
+ for(const name of ['stdout.log','stderr.log','result.json','artifacts/report.txt'])await expect(readFile(join(directory,name))).rejects.toMatchObject({code:'ENOENT'});
+ expect(await readFile(join(directory,'artifacts/private.txt'),'utf8')).toBe('artifacts/private.txt');
+ expect(await cli(f.socket,['show','execution'])).toMatchObject({attempts:[{toolCalls:[{...tool,logs:{complete:false},cleanup:{status:'cleaned'}}]}]});
+ expect(await cli(f.socket,['logs','execution','--call','1'])).toMatchObject({callId:'1',availability:'cleaned',complete:false});
+ expect(await cli(f.socket,['artifact','execution','--call','1','--name','report.txt'])).toMatchObject({callId:'1',availability:'cleaned',content:null});
+});
+
+test.each(['running','unknown','attention','unconfirmed'])('CLI cleanup retains whole execution with %s tool evidence',async(state)=>{
+ const f=await fixture();await historical(f,'completed',{toolCalls:[{id:'1',runState:state==='running'||state==='unknown'?state:'completed',...(state==='attention'?{requiresAttention:true}:{}),...(state==='unconfirmed'?{cancellation:{reason:'stop'}}:{})}]});
+ const directory=join(f.directory,'tools','1');await mkdir(directory,{recursive:true});await writeFile(join(directory,'stdout.log'),'tool evidence');await start(f);
+ expect(await cli(f.socket,['cleanup'])).toEqual({attempts:[]});
+ expect(await readFile(join(directory,'stdout.log'),'utf8')).toBe('tool evidence');expect(await readFile(join(f.directory,'stdout.log'),'utf8')).toBe('stdout.log');
+});
+
+test('CLI cleanup completes tool deletion left behind by an older cleaned record',async()=>{
+ const f=await fixture();await historical(f,'completed',{cleanup:{status:'cleaned'},toolCalls:[{id:'1',runState:'completed',logs:{complete:true}}]});
+ const directory=join(f.directory,'tools','1');await mkdir(directory,{recursive:true});await writeFile(join(directory,'stdout.log'),'old tool evidence');await start(f);
+ expect(await cli(f.socket,['cleanup'])).toMatchObject({attempts:[{status:'cleaned'}]});await expect(readFile(join(directory,'stdout.log'))).rejects.toMatchObject({code:'ENOENT'});
+});
+
+test.each(['tools','1','artifacts','stdout.log','result.json','report.txt'])('tool cleanup rejects symlinked %s without deleting provider resources',async(level)=>{
+ const f=await fixture();await historical(f,'completed',{toolCalls:[{id:'1',runState:'completed',artifacts:[{name:'report.txt'}]}]});
+ const directory=join(f.directory,'tools','1');await mkdir(join(directory,'artifacts'),{recursive:true});const outside=await temporary();const target=join(outside,'evidence');await writeFile(target,'provider evidence');
+ const path=level==='tools'?join(f.directory,'tools'):level==='1'?directory:level==='report.txt'?join(directory,'artifacts','report.txt'):join(directory,level);
+ await rm(path,{recursive:true,force:true});await symlink(['tools','1','artifacts'].includes(level)?outside:target,path);await start(f);
+ expect(await cli(f.socket,['cleanup'])).toMatchObject({attempts:[{status:'failed'}]});expect(await readFile(target,'utf8')).toBe('provider evidence');
+ expect(await cli(f.socket,['logs','execution','--call','1'])).toMatchObject({availability:'failed',complete:false});
+});
+
+test('tool evidence queries reject symlinked parent directories',async()=>{
+ const f=await fixture();await historical(f,'completed',{toolCalls:[{id:'1',runState:'completed',logs:{complete:true}}]});const outside=await temporary();await writeFile(join(outside,'stdout.log'),'provider secret');await writeFile(join(outside,'stderr.log'),'provider secret');await mkdir(join(f.directory,'tools'));await symlink(outside,join(f.directory,'tools','1'));await start(f);
+ await expect(call(f.socket,{command:'logs',id:'execution',call:'1'})).rejects.toThrow('physical directory');
+});
+
 test('unknown cleanup never leaves historical logs marked complete',async()=>{
  const f=await fixture();await historical(f,'completed',{cleanup:{status:'unknown'}});await start(f);
  expect(await cli(f.socket,['show','execution'])).toMatchObject({attempts:[{logs:{complete:false}}]});
