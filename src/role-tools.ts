@@ -15,6 +15,7 @@ try {
 } catch(error){console.error(JSON.stringify({error:error.message}));process.exitCode=1;}
 `);
   let accepting=true;
+  let observationWrites=Promise.resolve();
   const handlers=new Set<Promise<void>>();
   const server=createServer((req,res)=>{
     if(!accepting){res.statusCode=503;res.end(JSON.stringify({error:'Tool facility is closing'}));return;}
@@ -29,7 +30,11 @@ try {
       let result:unknown;let error:string|undefined;
       try {result=JSON.parse(JSON.stringify(await tool.read!(message.input)));}catch {error='Read-only tool failed; evidence unavailable';}
       // Save before delivery: model text is not a substitute for an observed result.
-      try {await appendFile(join(artifacts,'observations.jsonl'),JSON.stringify({attemptId,actualSha,observedAt:new Date().toISOString(),tool:tool.id,input:message.input,...(error?{error}:{result})})+'\n');}
+      // Serialize whole JSONL records, not reads: large appendFile calls can interleave.
+      const observation=JSON.stringify({attemptId,actualSha,observedAt:new Date().toISOString(),tool:tool.id,input:message.input,...(error?{error}:{result})})+'\n';
+      const saved=observationWrites.then(()=>appendFile(join(artifacts,'observations.jsonl'),observation));
+      observationWrites=saved.catch(()=>{}); // A failed save must not poison later writes.
+      try {await saved;}
       catch {const message='Tool observation could not be saved; result not delivered';saveError(message);throw Error(message);}
       if(error)throw Error(error);
       res.end(JSON.stringify(result));
