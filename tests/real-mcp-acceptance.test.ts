@@ -1,3 +1,4 @@
+import { once } from 'node:events';
 import { spawn } from 'node:child_process';
 import { mkdtemp, readFile, access, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -47,8 +48,20 @@ async function runAcceptance(processes: string, retained: boolean) {
     }
   } finally {
     // Only these controlled fixture processes; never terminate a real execution.
-    if (controlPid) { try { process.kill(controlPid, 'SIGTERM'); } catch {} }
-    if (child.exitCode === null) child.kill('SIGTERM');
+    if (controlPid) {
+      try { process.kill(controlPid, 'SIGTERM'); } catch {}
+      await expect.poll(() => {
+        try { process.kill(controlPid!, 0); return false; } catch (error) {
+          if ((error as NodeJS.ErrnoException).code === 'ESRCH') return true;
+          throw error;
+        }
+      }).toBe(true);
+    }
+    if (child.exitCode === null && child.signalCode === null) {
+      const exited = once(child, 'exit');
+      child.kill('SIGTERM');
+      await exited;
+    }
     await rm(state, { recursive: true, force: true });
   }
 }

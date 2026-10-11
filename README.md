@@ -74,7 +74,15 @@ pnpm start logs EXECUTION_ID --attempt ATTEMPT_ID --socket /srv/orchestrator-dat
 
 `Sandbox.run` resolve 与模型文本都不能证明退出。公开 provider command 外包 subshell，在 CLI 实际结束后写随机 exit marker，stream parser 精确识别该 marker，保留原 stdin/parser/session 契约；marker 缺失保持 unknown。该证据用于可信设施中的生命周期观察，不是抵抗恶意容器/模型伪造的安全认证。显式 `idleTimeoutSeconds: Infinity`、`completionTimeoutSeconds: Infinity`、`completionSignal: []`，不增加 token/费用/turn 预算。Git setup/commit collection 沿用 SDK 10s/30s 真实设施超时；Docker启动与管理员工具各自负责超时，编排器不强杀。
 
-2026-10-11 已在授权环境完成真实只读单角色运行与人工 retry，通过 Claude Code → CC-Switch → Codex OAuth 路径验证挂载、认证、报告、session 导出和退出证据，详见 [验收记录](docs/issue-19-real-acceptance.md)。此结果不代表其他 provider 或真实协作取消响应通过；并发调度 #20 不在本实现范围。
+2026-10-11 已在授权环境完成真实只读单角色运行与人工 retry，通过 Claude Code → CC-Switch → Codex OAuth 路径验证挂载、认证、报告、session 导出和退出证据，详见 [验收记录](docs/issue-19-real-acceptance.md)。此结果不代表其他 provider 或真实协作取消响应通过；并发调度不在本实现范围。
+
+### 协作停止与显式期限（#20）
+
+`roleBindings` 可选 `attemptDeadlineSeconds`（有限正数，支持小数秒）；省略时无期限，仅适用于主 Agent 角色，不影响确定性执行。尝试进入 `starting` 时一并保存期限秒数、`createdAt` 和绝对 `deadlineAt`，包含准备与启动时间，不计排队。到期先保存 `cancellation.kind: deadline`、原因和请求时间，再沿用取消通路发布只读停止文件；不延长期限、不暂停续跑、不自动重试。准备阶段收到停止意图则不启动 Agent，保存 `never-started` 证据。
+
+停止文件保留 `requested` 首行并增加 attempt/execution 身份、原因、请求时间及可读说明。Prompt 让 Agent 自主选择检查点，停止开展新工作、整理结果并正常结束，长工具调用可能延迟响应。`cancellationNotification: published/failed` 区分发送结果；published 不是结束证明。未配合、发送失败或保存未决继续保持 unknown，禁止替代尝试，后续调度必须继续计入主 Agent 额度；本版本尚未实现额度调度。可信 CLI 退出后才记录实际取消终态；取消不证明子 Agent、工具或远端任务停止，也不撤销写入。
+
+配置和 SQLite JSON 字段均为兼容性增加，原 CLI/socket 命令、旧记录及停止文件存在性检查保持有效。经恢复者核实并 resolve 的未决执行，其历史 `persistenceError` 保留为审计信息，不再单独阻止到期清理；未 resolve 的错误仍保护相关证据。回退到此前版本不会执行新增期限，需先停止服务并核查活跃尝试，再按下述备份回退流程处理。真实正常路径验收固定在 [issue #20 实测代码版本](docs/issue-20-real-acceptance.md)；退出证据保存失败（35e6219）及合并后的到期清理交互均由受控 CLI/socket 回归覆盖，未在该次真实运行中验证。#19 的真实运行记录不能替代该验收。
 
 ## 已有 MCP 服务（#23）
 
@@ -129,6 +137,56 @@ socket 对应命令为 `cancel/confirm-stop/resolve/retry`，使用 `id`、`reas
 ### 存储升级与回退
 
 自动增量创建 `execution_management` 表并扩展 attempts 的 JSON facts，不删除或修改旧表列；旧记录无新字段也可读写。升级前停止服务、核查底层容器并备份完整 DATA（SQLite、attempts 目录），不要仅备份数据库。旧二进制能读取新增字段但不理解取消、恢复及固定重试基线语义；存在新状态或多尝试时不能直接降级继续执行。回退应停止新服务并确认底层停止，恢复升级前完整备份，再部署旧版本；恢复备份不撤销外部副作用，必须人工核对，避免重复提交。
+
+## 故障定位与外部通知
+
+沿用 CLI/socket，不提供监控平台。先按 repo 和状态查询，再用 executionId 查详情。`start_failed` 是启动失败，`unknown` 需要人工核对；`completed` 也可能带 `contract: error`，不能只查状态判断业务结果。业务失败由能力的 `business` 契约解释，通用查询不会猜测业务字段。提交前的校验拒绝不在 `list` 中，使用提交回执的 requestId 查 `show`。
+
+```sh
+node --import tsx src/cli.ts list --socket "$DATA/control.sock" --repo example --status unknown
+node --import tsx src/cli.ts list --socket "$DATA/control.sock" --repo example --status start_failed
+node --import tsx src/cli.ts show "$EXECUTION_ID" --socket "$DATA/control.sock"
+node --import tsx src/cli.ts logs "$EXECUTION_ID" --socket "$DATA/control.sock" --attempt "$ATTEMPT_ID"
+node --import tsx examples/query-attention.ts --socket "$DATA/control.sock" --repo example
+```
+
+`examples/query-attention.ts` 是只读外部脚本，调用现有 CLI 的 `list` JSON。成功输出单行 `{version:1,available:true,items:[...]}`，退出码 0，无待处理项时 `items:[]`。每项只含 `requestId/executionId/status/attemptId/reasons`，不转发 repo 名称、输入、错误文字、日志、环境变量、business 或人工处理文字。`reasons` 是 `failed`、`needs_attention`、`stop_unconfirmed` 的组合。脚本检查启动失败、契约错误、unknown/必要保存失败以及有取消意图但没有停止确认的尝试；正常 queued、静默 running 不告警，排队取消没有底层尝试也不算未确认停止。无尝试的启动前失败仍显示 `start_failed`，对应 `execution_failure` 服务日志。`execution.startFailures` 在现有管理 JSON 中保留每次失败的 `recordedAt/configVersion/classification/reason/logEvent`，不保存任意异常文字；重启和人工 retry 都保留历史，没有该字段的旧记录仍有效。日志按 executionId、事件和时间查 journal；可核查配置后人工 retry。脚本查询有 30 秒超时及 16 MiB 输出上限，只约束查询，不约束执行。socket 不可用、CLI 失败、输出解析失败或达到上限，stdout 为空，stderr 单行 `{version:1,available:false,error:"Control query failed"}`，退出码 1。不能把失败当成正常的空列表。
+
+详情提供原始请求、尝试、配置版本、实际/选定 SHA、时间、失败原因、日志/产物引用及人工核对的外部结果。原始输入、日志、模型报告和外部结果可能敏感，只在受限环境查看。管理员按能力所用设施核对远端结果，不从模型文字推断成功。`location.container` 可用于 `docker inspect --format '{{json .State}}' NAME` 和 `docker logs NAME`；`processIdentity/reconnectHandle:null` 表示没有可靠宿主进程身份或重连句柄，不能用猜测的 PID 杀进程。名称是定位信息，不是停止证明。还需核对宿主入口、子 Agent、工具和远端操作。控制服务或主 Agent 退出、取消回执、单个容器退出都不证明全部停止。
+
+服务日志写 stderr，交给 systemd journal 或现有日志采集设施。JSON 包含 `time/event/error`，后台执行错误另含 executionId。事件有 `service_failure`、`service_crash`、`execution_failure`、`execution_failure_save_failed`、`management_failure`。服务日志只记录固定安全错误摘要，不写任意异常消息、stack、认证头或完整环境。已知启动校验错误保留安全分类，其他异常显示 `Control service failed`，管理员结合配置部署版本、journal 时间和受限运行记录定位。失败记账本身失败时服务日志仍有证据，但数据库可能暂留 queued，不能仅凭查询宣称没有故障。SIGKILL、断电无法由被杀进程写日志，由进程管理器的退出记录发现。
+
+可由 cron/systemd timer 在应用安装目录运行查询。通知桥只接收上述摘要，渠道凭据由管理员放在桥自己的受限文件中，不写命令参数或通知内容。以下接法要求 `jq` 和管理员现有的 `notify-summary` 工具，不附带发送实现，也不运行真实通知。
+
+```sh
+umask 077
+summary=$(mktemp)
+trap 'rm -f "$summary"' EXIT
+if node --import tsx examples/query-attention.ts --socket "$DATA/control.sock" >"$summary"; then
+  count=$(jq -er 'if .version == 1 and .available == true and (.items | type == "array") then (.items | length) else error("invalid query summary") end' "$summary") || {
+    echo 'query summary validation unavailable or invalid' >&2
+    exit 1
+  }
+  case "$count" in ''|*[!0-9]*) echo 'invalid item count' >&2; exit 1;; esac
+  if [ "$count" -gt 0 ]; then
+    notify-summary <"$summary" || { echo 'notification channel unavailable' >&2; exit 1; }
+  fi
+else
+  printf '%s\n' '{"version":1,"available":false,"error":"Control query failed"}' |
+    notify-summary || { echo 'notification channel unavailable' >&2; exit 1; }
+  exit 1
+fi
+```
+
+没有配置通知就由管理员主动查询并查看 journal，不承诺及时提醒。通知渠道、jq、timer 或进程管理器不可用时，脚本不能补上这些设施；没有心跳、告警升级、自动重试或自动对账。用 `systemctl status UNIT`、`journalctl -u UNIT` 发现控制进程退出，并通过现有 `OnFailure=` 接管理员通知工具。不要配置自动强杀残留来腾空间。重启只把旧 starting/running 投影为 unknown，不接管内部工具位置；是否自动重启由部署者决定，本项目不提供默认 `Restart=always`。
+
+### 受控演练与处理顺序
+
+运行 `pnpm test tests/management.test.ts tests/execution.test.ts`。新增 operations drill 使用临时 Git repo 和受控 Docker CLI 替身，无模型、容器或外部写入。测试先运行无新输出的宿主入口，确认仍 running；取消后查询显示停止未确认；SIGKILL 控制进程后脚本非零失败；重启保留同一尝试并显示 unknown；查询详情与日志找到 SHA、配置版本、容器定位和 `drill-output`。恢复者核对替身与宿主后 confirm-stop、resolve，再人工 retry，故意返回无效业务契约，脚本报告 failed。服务故障测试另注入含敏感文字的配置异常、未捕获异常和失败记账异常，验证安全 stderr 及退出码。已有 #18 测试覆盖必要保存失败、入口仍 live 时禁止人工恢复及历史记录保护。这些测试不是实际 systemd、Docker、provider 或通知投递验收。
+
+实际环境按同样顺序演练，但必须另有授权，先记录 executionId/attemptId 和配置版本，保存受限日志，再核对 `docker inspect`、设施命令及远端引用。缺证据就保持 unknown，不 retry。确认所有相关活动结束后 `confirm-stop` 记录来源、方法、原因，`resolve/retry` 再记录外部结果；人工确认不是独立验证。默认执行不限时，运行久、无输出或无心跳均不能自动判故障。本次未验证真实退出后的子进程树、远端副作用、systemd 或通知发送。
+
+到期清理通过下述 `cleanup` 管理入口执行。普通清理不能按目录年龄、无输出、控制进程退出或取消意图删除活跃/未确认尝试。先核对执行、尝试、停止证据和外部结果，再单独清理已确认结束的设施；保留人工恢复需要的记录、日志和产物。不要使用 `docker container prune`、`docker rm -f` 或批量 `rm` 绕过这一步。DATA 根目录 0700、socket/新建文件 0600；已有文件权限不会自动递归修复，管理员可用 `stat` 核验，并在停止服务且核查执行后按存储策略处理。不要 `chmod -R` 正在运行的 workspace。备份、导出的日志/产物和通知暂存也须限制权限、访问人员及保留期。日志/产物不是秘密过滤器，脱敏后才可分享，发现凭据泄露先撤销凭据再按授权清除敏感副本。
 
 ## 到期清理
 
