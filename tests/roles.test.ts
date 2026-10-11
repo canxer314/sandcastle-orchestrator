@@ -42,7 +42,7 @@ test.each(['valid','invalid','missing-exit','cancelled','save-failure','secret-s
   if(capture){
     const calls=await readFile(join(bin,'calls'),'utf8');expect(calls).toContain(`exec -i ${detail.attempts[0].container} cat -- /home/agent/session`);expect(calls).not.toMatch(/^cp /m);
     expect(detail.attempts[0]).toMatchObject({exitCode:0,contract:'valid',business:{summary:'controlled report'}});
-    if(mode==='session'){expect(detail.attempts[0].error).toBeUndefined();expect(detail.attempts[0].iterations[0]).toMatchObject({sessionId:'controlled-session',sessionFilePath:join(detail.attempts[0].workspace,'captured-session')});expect(await readFile(detail.attempts[0].iterations[0].sessionFilePath)).toEqual(session);}
+    if(mode==='session'){expect(detail.attempts[0].error).toBeUndefined();expect(detail.attempts[0].iterations[0]).toMatchObject({sessionId:'controlled-session',sessionFilePath:join(detail.attempts[0].workspace,'captured-session')});expect((await readFile(detail.attempts[0].iterations[0].sessionFilePath)).equals(session)).toBe(true);}
     else expect(detail.attempts[0]).toMatchObject({error:'Agent execution or SDK postprocessing failed',iterations:[{sessionId:'controlled-session'}]});
     return;
   }
@@ -51,7 +51,7 @@ test.each(['valid','invalid','missing-exit','cancelled','save-failure','secret-s
   if(mode==='secret-start-failure'){expect(JSON.stringify(detail)).not.toContain('never-persist-this-secret');expect(JSON.stringify(await call(socket,{command:'logs',id:receipt.executionId}))).not.toContain('never-persist-this-secret');return;}
   if(mode!=='valid'){
     expect(detail.attempts[0].business).toBeUndefined();
-    if(mode==='save-failure') {expect(detail.attempts[0].error).toContain('prompt save blocked');expect(await (await import('node:fs/promises')).readFile(join(bin,'calls'),'utf8').catch(()=>'' )).toBe('');return;}
+    if(mode==='save-failure') {expect(detail.attempts[0].endedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);expect(detail.attempts[0].error).toContain('prompt save blocked');expect(await (await import('node:fs/promises')).readFile(join(bin,'calls'),'utf8').catch(()=>'' )).toBe('');return;}
     if(mode==='cancelled') {const stopped=await (await import('node:fs/promises')).readFile(join(detail.attempts[0].stopDirectory,'requested'),'utf8');expect(stopped).toBe('requested\n');expect(detail.attempts[0].prompt).toContain('/orchestrator-stop/requested');expect(detail.attempts[0].stopConfirmation.kind).toBe('agent-exit-marker');}
     else if(mode==='invalid')expect(detail.attempts[0].contract).toBe('error');
     else {expect(detail.attempts[0].stopConfirmation).toBeUndefined();await call(socket,{command:'cancel',id:receipt.executionId,reason:'operator'});expect((await call(socket,{command:'show',id:receipt.executionId}) as any).attempts[0].cancellationLimit).toContain('Agent cancellation');

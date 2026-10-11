@@ -1,3 +1,5 @@
+import { lstatSync, unlinkSync, readdirSync, rmdirSync } from 'node:fs';
+import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
@@ -102,9 +104,10 @@ export class Records {
     if (!row) throw new Error('Execution not found');
     const attempts = this.db.prepare('SELECT * FROM attempts WHERE execution_id = ? ORDER BY rowid').all(String(row.execution_id)).map(a => {
       const unknown = this.priorAttempts.has(String(a.id)) || this.unresolved.has(String(a.id));
+      const facts = JSON.parse(String(a.facts));
       return {
         id: a.id, configVersion: a.config_version, capability: a.capability, environment: a.environment,
-        ...JSON.parse(String(a.facts)), runState: unknown ? 'unknown' : a.run_state,
+        ...facts, ...(facts.cleanup ? {logs:{...facts.logs,complete:false}} : {}), runState: unknown ? 'unknown' : a.run_state,
         ...(unknown ? { persistedRunState: a.run_state, requiresAttention: true } : {}),
         location: {container:JSON.parse(String(a.facts)).container ?? null, processIdentity:null, reconnectHandle:null, limitation:'No harness process identity or reconnect handle; container name is evidence, not proof of stopping'},
         ...(this.unresolved.has(String(a.id)) ? { persistenceError: this.unresolved.get(String(a.id)) } : {}),
@@ -236,7 +239,7 @@ export class Records {
     }
     this.db.exec('BEGIN IMMEDIATE');
     try {
-      this.db.prepare('UPDATE attempts SET run_state = ?, facts = ? WHERE id = ?').run(state, JSON.stringify({...JSON.parse(String(existing.facts)),...facts,runState:state}), id);
+      this.db.prepare('UPDATE attempts SET run_state = ?, facts = ? WHERE id = ?').run(state, JSON.stringify({...JSON.parse(String(existing.facts)),...facts,runState:state,...(['completed','cancelled','resolved','start_failed'].includes(state) ? {endedAt:(facts as {endedAt?:string}).endedAt ?? new Date().toISOString()} : {})}), id);
       this.db.prepare('UPDATE executions SET status = ? WHERE id = (SELECT execution_id FROM attempts WHERE id = ?)').run(state, id);
       this.db.exec('COMMIT');
       this.priorAttempts.delete(id);
@@ -246,6 +249,74 @@ export class Records {
 
   markUnresolved(id: string, error: unknown) {
     this.unresolved.set(id, error instanceof Error ? error.message : 'Required record save failed');
+  }
+
+  cleanup(data: string) {
+    const attempts: {attemptId: string; status: string; reason?: string}[] = [];
+    const now = Date.now();
+    // ponytail: synchronous local unlinks serialize state changes in the single writer;
+    // use an explicit per-execution reservation if cleanup ever moves to a worker.
+    for (const detail of this.list()) {
+      const terminal = ['completed', 'cancelled', 'resolved', 'start_failed'];
+      const latest = detail.attempts.at(-1);
+      const endedAt = detail.execution?.status === 'resolved' ? this.management(String(detail.execution.id)).reconciliation?.recordedAt : latest?.endedAt;
+      const ended = typeof endedAt === 'string' ? Date.parse(endedAt) : NaN;
+      if (!terminal.includes(String(detail.execution?.status)) || !Number.isFinite(ended)
+        || now - ended < 30 * 24 * 60 * 60 * 1000
+        || detail.attempts.some(a => this.isLive(String(a.id)) || !terminal.includes(a.runState) || a.requiresAttention
+          || a.persistenceError || (a.cancellation && !a.stopConfirmation && a.runState !== 'start_failed'))) continue;
+      for (const attempt of detail.attempts) {
+        const id = String(attempt.id);
+        if (attempt.cleanup?.status === 'cleaned') { attempts.push({attemptId:id,status:'cleaned'}); continue; }
+        const save = (cleanup: object) => {
+          const row = this.db.prepare('SELECT facts FROM attempts WHERE id = ?').get(id)!;
+          this.db.prepare('UPDATE attempts SET facts = ? WHERE id = ?').run(JSON.stringify({...JSON.parse(String(row.facts)), cleanup, logs:{...attempt.logs,complete:false}}),id);
+        };
+        save({status:'unknown',startedAt:new Date(now).toISOString()});
+        try {
+          if (!/^[A-Za-z0-9][A-Za-z0-9-]*$/.test(id)) throw Error('Unsafe attempt identifier');
+          const directory = join(data,'attempts',id);
+          const checkDirectory = (path: string) => {
+            try { if (!lstatSync(path).isDirectory()) throw Error('Cleanup path is not a physical directory'); }
+            catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+          };
+          checkDirectory(data); checkDirectory(join(data,'attempts')); checkDirectory(directory);
+          const names = (attempt.artifacts ?? []).map((a: {name:string}) => a.name);
+          if (names.some((name: unknown) => typeof name !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name))) throw Error('Unsafe artifact name');
+          if (names.length) checkDirectory(join(directory,'artifacts'));
+          for (const path of [join(directory,'stdout.log'),join(directory,'stderr.log'),...names.map((name:string)=>join(directory,'artifacts',name))]) {
+            try { if (!lstatSync(path).isFile()) throw Error('Cleanup target is not a regular file'); unlinkSync(path); }
+            catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+          }
+          if (attempt.kind === 'agent') {
+            // This validation snapshot is never mounted or handed to the provider.
+            // Preflight the whole tree so an unexpected link never causes partial traversal.
+            const files: string[] = []; const directories: string[] = [];
+            const scan = (path: string) => {
+              let stat;
+              try { stat = lstatSync(path); }
+              catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return; throw error; }
+              if (stat.isFile()) { files.push(path); return; }
+              if (!stat.isDirectory()) throw Error('Context snapshot contains an unsafe target');
+              for (const name of readdirSync(path)) scan(join(path,name));
+              directories.push(path);
+            };
+            scan(join(directory,'context'));
+            for (const path of files) unlinkSync(path);
+            for (const path of directories) rmdirSync(path);
+          }
+        } catch (error) {
+          const reason = error instanceof Error ? error.message : 'Cleanup failed';
+          save({status:'failed',failedAt:new Date(now).toISOString(),reason});
+          attempts.push({attemptId:id,status:'failed',reason});
+          continue;
+        }
+        // Filesystem success is not persisted success: leave unknown if this save fails.
+        save({status:'cleaned',finishedAt:new Date(now).toISOString()});
+        attempts.push({attemptId:id,status:'cleaned'});
+      }
+    }
+    return {attempts};
   }
 
   close() { this.db.close(); }
