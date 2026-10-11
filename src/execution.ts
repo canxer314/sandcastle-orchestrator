@@ -49,7 +49,7 @@ export async function cancelExecution(records: Records, id: string) {
     let published=false;
     try {
       if (!attempt.stopDirectory) throw Error('Stop notification path unavailable');
-      await writeFile(join(String(attempt.stopDirectory),'requested'),'requested\n',{mode:0o600,flag:'wx'});
+      await writeFile(join(String(attempt.stopDirectory),'requested'),`requested\n${JSON.stringify({attemptId:attempt.id,executionId:detail.execution?.id,...attempt.cancellation})}\nStop starting new work, summarize available results and end normally. This request does not confirm that tools, child agents or remote work have stopped.\n`,{mode:0o600,flag:'wx'});
       published=true;
     } catch(error) { published=(error as NodeJS.ErrnoException).code==='EEXIST'; }
     try {

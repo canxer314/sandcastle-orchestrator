@@ -22,10 +22,10 @@ async function fixture(){
  const directory=join(data,'attempts','attempt');await mkdir(join(directory,'artifacts'),{recursive:true});
  for(const name of ['stdout.log','stderr.log','artifacts/report.txt','provider.log'])await writeFile(join(directory,name),name);
  await mkdir(join(directory,'workspace'));await writeFile(join(directory,'workspace','keep'),'checkout');
- const launcher=join(configDir,'serve.mts');await writeFile(launcher,`const RealDate=Date;globalThis.Date=class extends RealDate {constructor(...args){super(...(args.length?args:['2026-01-31T00:00:00Z']))}static now(){return new RealDate('2026-01-31T00:00:00Z').getTime()}};const {serve}=await import(${JSON.stringify(join(root,'src/control.ts'))});await serve(${JSON.stringify(data)},${JSON.stringify(config)});`);
- return {data,directory,launcher,socket:join(data,'control.sock')};
+ const launcher=join(configDir,'serve.mts');await writeFile(launcher,`const fixed=process.env.TEST_NOW||'2026-01-31T00:00:00Z';const RealDate=Date;globalThis.Date=class extends RealDate {constructor(...args){super(...(args.length?args:[fixed]))}static now(){return new RealDate(fixed).getTime()}};const {serve}=await import(${JSON.stringify(join(root,'src/control.ts'))});await serve(${JSON.stringify(data)},${JSON.stringify(config)});`);
+ return {data,config,directory,launcher,socket:join(data,'control.sock')};
 }
-async function start(f:Awaited<ReturnType<typeof fixture>>){const child=spawn(process.execPath,['--import','tsx',f.launcher],{cwd:root});children.push(child);await new Promise<void>((resolve,reject)=>{let out='';let err='';const timer=setTimeout(()=>reject(Error(err||'not ready')),10000);child.stderr.on('data',d=>err+=d);child.stdout.on('data',d=>{out+=d;if(out.includes('ready')){clearTimeout(timer);resolve()}});child.once('exit',()=>{clearTimeout(timer);reject(Error(err))})});return child}
+async function start(f:Awaited<ReturnType<typeof fixture>>,now?:string){const child=spawn(process.execPath,['--import','tsx',f.launcher],{cwd:root,env:now?{...process.env,TEST_NOW:now}:process.env});children.push(child);await new Promise<void>((resolve,reject)=>{let out='';let err='';const timer=setTimeout(()=>reject(Error(err||'not ready')),10000);child.stderr.on('data',d=>err+=d);child.stdout.on('data',d=>{out+=d;if(out.includes('ready')){clearTimeout(timer);resolve()}});child.once('exit',()=>{clearTimeout(timer);reject(Error(err))})});return child}
 afterEach(async()=>{await Promise.all(children.splice(0).map(async c=>{if(c.exitCode===null&&c.signalCode===null){const exit=once(c,'exit');c.kill('SIGTERM');await exit}}));await Promise.all(dirs.splice(0).map(d=>rm(d,{recursive:true,force:true})))});
 test('external CLI cleanup at thirty days retains history and provider resources and reports cleaned content',async()=>{
  const f=await fixture();await start(f);
@@ -35,6 +35,18 @@ test('external CLI cleanup at thirty days retains history and provider resources
  const detail=await cli(f.socket,['show','execution']);expect(detail.attempts[0]).toMatchObject({sessionId:'provider-session',externalReferences:['https://example.invalid/pr/1'],cleanup:{status:'cleaned'},logs:{complete:false}});
  expect(await cli(f.socket,['logs','execution'])).toMatchObject({availability:'cleaned',complete:false});expect(await cli(f.socket,['artifact','execution','--name','report.txt'])).toMatchObject({availability:'cleaned',content:null});
  expect(await cli(f.socket,['cleanup'])).toMatchObject({attempts:[{attemptId:'attempt',status:'cleaned'}]});
+});
+
+test('CLI recovery keeps persistence failure audit but allows thirty-day cleanup',async()=>{
+ const f=await fixture();await historical(f,'unknown',{persistenceError:'deadline save blocked',stopConfirmation:{kind:'manual'}});await start(f);
+ expect(await cli(f.socket,['cleanup'])).toEqual({attempts:[]});
+ const audit={source:'operator',handling:'checked old attempt',reason:'confirmed stopped',externalResults:'no external writes'};
+ const resolved=await call(f.socket,{command:'resolve',id:'execution',...audit}) as any;
+ expect(resolved).toMatchObject({execution:{status:'resolved',reconciliation:audit},attempts:[{runState:'resolved',persistenceError:'deadline save blocked',reconciliation:{...audit,decision:'resolve'}}]});
+ const service=children.pop()!;const exit=once(service,'exit');service.kill('SIGTERM');await exit;
+ await start(f,'2026-03-03T00:00:00Z');
+ expect(await cli(f.socket,['cleanup'])).toMatchObject({attempts:[{attemptId:'attempt',status:'cleaned'}]});
+ expect(await cli(f.socket,['show','execution'])).toMatchObject({attempts:[{runState:'resolved',persistenceError:'deadline save blocked',reconciliation:{...audit,decision:'resolve'},cleanup:{status:'cleaned'}}]});
 });
 
 async function historical(f:Awaited<ReturnType<typeof fixture>>,state:string,facts:Record<string,unknown>={}) {
