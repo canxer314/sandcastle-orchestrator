@@ -1,6 +1,6 @@
 # Sandcastle orchestrator
 
-独立的单机 TypeScript 应用。当前交付 [#15](https://github.com/canxer314/sandcastle-orchestrator/issues/15) 的请求提交与查询，不启动业务执行。完整规格见 [#14](https://github.com/canxer314/sandcastle-orchestrator/issues/14)。
+独立的单机 TypeScript 应用。当前交付 [#15](https://github.com/canxer314/sandcastle-orchestrator/issues/15) 的请求提交与查询，以及 [#17](https://github.com/canxer314/sandcastle-orchestrator/issues/17) 的外部定时提交与重复送达处理，不启动业务执行。完整规格见 [#14](https://github.com/canxer314/sandcastle-orchestrator/issues/14)。
 
 ## 安装与运行
 
@@ -33,7 +33,13 @@ pnpm start show REQUEST_OR_EXECUTION_ID --socket /srv/orchestrator-data/control.
 
 合法提交在同一个 SQLite 事务中保存请求和执行，返回 `accepted: true`、`requestId`、`executionId`。无效 repo、能力或输入在数据库可写时保存拒绝记录，返回 `accepted: false`、`requestId`、`reason`，不建立执行。校验器抛错即拒绝，即使错误消息为空，也不会建立执行。拒绝也是已记录的提交响应，退出码为 0，脚本必须检查 `accepted`。必要保存失败返回非零退出码，不返回接纳或拒绝回执。
 
-`show` 可使用请求或执行标识，包含原始输入、来源、拒绝原因、排队执行和空的尝试列表。`list` 只列执行，按提交顺序返回，可按 repo 和状态筛选。没有去重键功能，相同输入每次提交都是独立请求。所有合法请求保持 `queued`，重启后仍可查询，不会自动消费。
+`show` 可使用请求或执行标识，包含原始输入、来源、计划时间 `scheduledAt`、去重键 `deduplicationKey`、拒绝原因、排队执行和空的尝试列表。`list` 只列执行，按提交顺序返回，可按 repo、状态和 `--source` 筛选。所有合法请求保持 `queued`，重启后仍可查询，不会自动消费。
+
+提交可选 `--deduplication-key KEY` 和 `--scheduled-at 2026-10-11T00:00:00Z`；socket 字段为 `deduplicationKey`、`scheduledAt`。键必须是非空字符串，计划时间必须是带时区的 ISO 时间字符串，畸形字段返回 HTTP 400，不建立记录。同一 `source` 内，同键且 repo、capability、原始 JSON 输入、计划时间相同，返回原有接纳回执；JSON 对象字段顺序不影响比较，数组顺序有意义，计划时间按原字符串比较。不同内容返回 HTTP 400 和 `Deduplication key conflict`，CLI 非零退出，不覆盖旧记录。不同来源互不合并，无键每次新建。去重只登记成功接纳的请求；拒绝记录保留键线索，但不占键。接纳、执行和键登记在同一 SQLite 事务中完成。
+
+旧 CLI/socket 提交无需更改；旧 SQLite 表与记录保留，启动时只新增元数据和去重旁表，历史记录的两个新字段为 `null`。停服务并备份数据库后升级；回退旧程序仍可读写原表，但不支持去重，切勿在回退期间继续投递需要去重的任务。重新升级也不能为回退期间的请求追补键。
+
+外部脚本、cron/systemd timer 配置及补跑边界见 [外部定时提交](docs/external-submission.md)。编排器不重建未收到的触发，不阻止排队重叠，请求去重不保证副作用幂等。
 
 不要在输入或配置里写凭据。服务不主动保存环境变量或认证头，但原始输入和校验错误会持久化，输入、配置和运行记录应当作为敏感数据保护。这不是通用秘密过滤器。
 

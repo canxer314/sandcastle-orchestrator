@@ -40,4 +40,6 @@ export interface Submission {
   capability: string;
   input: unknown;
   source: string;
+  deduplicationKey?: string;
+  scheduledAt?: string;
 }

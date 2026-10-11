@@ -382,3 +382,116 @@ test('CLI accepts a request and queries the queued execution after service resta
     attempts: []
   });
 }, 20000);
+
+test('concurrent keyed submissions return one durable receipt and conflicting content fails', async () => {
+  const f = await fixture();
+  const service = await start(f);
+  const submission = { repo: 'alpha', capability: 'test-commit', input: 'sha', source: 'nightly', deduplicationKey: 'task:2026-10-11', scheduledAt: '2026-10-11T00:00:00Z' };
+  const results = await Promise.all(Array.from({ length: 8 }, () => socketCall(f.socket, { command: 'submit', submission })));
+  expect(results.every(r => r.status === 200 && r.body.accepted)).toBe(true);
+  expect(new Set(results.map(r => r.body.executionId)).size).toBe(1);
+  const receipt = results[0].body;
+  await stop(service);
+  await start(f);
+  expect((await socketCall(f.socket, { command: 'submit', submission })).body).toEqual(receipt);
+  const conflict = await socketCall(f.socket, { command: 'submit', submission: { ...submission, input: 'new-sha' } });
+  expect(conflict).toEqual({ status: 400, body: { error: 'Deduplication key conflict' } });
+  const listed = await socketCall(f.socket, { command: 'list' });
+  expect(listed.body).toHaveLength(1);
+  expect(listed.body[0]).toMatchObject({ request: { input: 'sha', deduplicationKey: submission.deduplicationKey, scheduledAt: submission.scheduledAt }, execution: { status: 'queued' } });
+});
+
+test('keys are source scoped, new triggers overlap, and malformed metadata is rejected', async () => {
+  const f = await fixture();
+  await start(f);
+  const args = ['submit', '--socket', f.socket, '--repo', 'alpha', '--capability', 'test-commit', '--input', '"sha"', '--deduplication-key', 'task:slot', '--scheduled-at', '2026-10-11T00:00:00Z'];
+  const first = await cli([...args, '--source', 'cron']);
+  expect(first.code, first.stderr).toBe(0);
+  const receipt = JSON.parse(first.stdout);
+  expect(JSON.parse((await cli([...args, '--source', 'cron'])).stdout)).toEqual(receipt);
+  expect(JSON.parse((await cli([...args, '--source', 'other'])).stdout).executionId).not.toBe(receipt.executionId);
+  const next = await socketCall(f.socket, { command: 'submit', submission: { repo: 'alpha', capability: 'test-commit', input: 'sha', source: 'cron', deduplicationKey: 'task:next' } });
+  expect(next.body.executionId).not.toBe(receipt.executionId);
+  const listed = await cli(['list', '--socket', f.socket, '--source', 'cron']);
+  expect(JSON.parse(listed.stdout)).toHaveLength(2);
+  expect(JSON.parse(listed.stdout).every((r: any) => r.execution.status === 'queued' && r.attempts.length === 0)).toBe(true);
+  for (const field of ['deduplicationKey', 'scheduledAt']) {
+    for (const value of ['', null, 1, {}, false, ...(field === 'scheduledAt' ? ['yesterday', '2026-10-11', '2026-02-30T00:00:00Z', '2026-10-11T24:00:00Z'] : [])]) {
+      expect(await socketCall(f.socket, { command: 'submit', submission: { repo: 'alpha', capability: 'test-commit', input: 'sha', source: 'cron', [field]: value } })).toEqual({ status: 400, body: { error: `Invalid ${field}` } });
+    }
+  }
+});
+
+test('a failed keyed save leaves its key available after storage recovers', async () => {
+  const f = await fixture();
+  await start(f);
+  const submission = { repo: 'alpha', capability: 'test-commit', input: 'sha', source: 'cron', deduplicationKey: 'slot' };
+  await chmod(f.dir, 0o500);
+  try { expect((await socketCall(f.socket, { command: 'submit', submission })).status).toBe(400); }
+  finally { await chmod(f.dir, 0o700); }
+  const accepted = await socketCall(f.socket, { command: 'submit', submission });
+  expect(accepted.body.accepted).toBe(true);
+  expect((await socketCall(f.socket, { command: 'submit', submission })).body).toEqual(accepted.body);
+  expect((await socketCall(f.socket, { command: 'list' })).body).toHaveLength(1);
+});
+
+test('key comparison uses original JSON content and every changed request field conflicts', async () => {
+  const f = await fixture();
+  await writeFile(f.config, `export default { version:'v1', repos:[{id:'alpha',location:'/test/alpha'}, {id:'beta',location:'/test/beta'}], environments:[{id:'test'}], capabilities:[{
+    id:'test-commit', environment:'test', async validate(input) { await new Promise(r => setTimeout(r, 20)); input.sha = 'mutated'; }, run() {}
+  }] };`);
+  await start(f);
+  const submission = { repo: 'alpha', capability: 'test-commit', input: { sha: 'original', range: [1, 2] }, source: 'timer', deduplicationKey: 'slot', scheduledAt: '2026-10-11T00:00:00Z' };
+  const responses = await Promise.all(Array.from({ length: 5 }, () => socketCall(f.socket, { command: 'submit', submission })));
+  expect(new Set(responses.map(r => r.body.requestId)).size).toBe(1);
+  const reordered = await socketCall(f.socket, { command: 'submit', submission: { ...submission, input: { range: [1, 2], sha: 'original' } } });
+  expect(reordered.body).toEqual(responses[0].body);
+  for (const change of [{ repo: 'beta' }, { capability: 'missing' }, { input: { sha: 'different', range: [1, 2] } }, { input: { sha: 'original', range: [2, 1] } }, { scheduledAt: '2026-10-12T00:00:00Z' }]) {
+    expect(await socketCall(f.socket, { command: 'submit', submission: { ...submission, ...change } })).toEqual({ status: 400, body: { error: 'Deduplication key conflict' } });
+  }
+  const detail = await socketCall(f.socket, { command: 'show', id: responses[0].body.requestId });
+  expect(detail.body.request.input).toEqual({ sha: 'original', range: [1, 2] });
+});
+
+test('accepted keys survive configuration changes, while rejected submissions do not reserve keys', async () => {
+  const f = await fixture();
+  const service = await start(f);
+  const submission = { repo: 'alpha', capability: 'test-commit', input: 'sha', source: 'timer', deduplicationKey: 'slot' };
+  const rejected = await socketCall(f.socket, { command: 'submit', submission: { ...submission, input: 42 } });
+  expect(rejected.body.accepted).toBe(false);
+  expect((await socketCall(f.socket, { command: 'show', id: rejected.body.requestId })).body.request.deduplicationKey).toBe('slot');
+  const accepted = await socketCall(f.socket, { command: 'submit', submission });
+  expect(accepted.body.accepted).toBe(true);
+  await stop(service);
+  await writeFile(f.config, `export default { version:'v2', repos:[], environments:[], capabilities:[] };`);
+  await start(f);
+  expect((await socketCall(f.socket, { command: 'submit', submission })).body).toEqual(accepted.body);
+});
+
+test('existing pre-key databases remain readable and writable after upgrade', async () => {
+  const f = await fixture();
+  const legacyRoot = await mkdtemp(join(tmpdir(), 'orch-legacy-'));
+  directories.push(legacyRoot);
+  const { execFileSync } = await import('node:child_process');
+  await mkdir(join(legacyRoot, 'src'));
+  for (const file of ['cli.ts', 'control.ts', 'config.ts', 'records.ts', 'paths.ts', 'lock.ts']) {
+    await writeFile(join(legacyRoot, 'src', file), execFileSync('git', ['show', `35d4200:src/${file}`], { cwd: root }));
+  }
+  await writeFile(join(legacyRoot, 'package.json'), '{"type":"module"}');
+  await symlink(join(root, 'node_modules'), join(legacyRoot, 'node_modules'));
+  const legacy = spawn(process.execPath, ['--import', 'tsx', join(legacyRoot, 'src/cli.ts'), 'serve', '--data', f.dir, '--config', f.config], { cwd: root });
+  children.add(legacy);
+  await new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('Legacy service did not start')), 5000);
+    legacy.stdout.on('data', chunk => { if (String(chunk).includes('ready')) { clearTimeout(timer); resolve(); } });
+    legacy.once('exit', () => { clearTimeout(timer); reject(new Error('Legacy service exited')); });
+  });
+  const submission = { repo: 'alpha', capability: 'test-commit', input: 'old-sha', source: 'manual' };
+  const old = await socketCall(f.socket, { command: 'submit', submission });
+  expect(old.body.accepted).toBe(true);
+  await stop(legacy);
+  await start(f);
+  expect((await socketCall(f.socket, { command: 'show', id: old.body.requestId })).body).toMatchObject({ request: { input: 'old-sha', deduplicationKey: null, scheduledAt: null }, execution: { id: old.body.executionId, status: 'queued' } });
+  expect((await socketCall(f.socket, { command: 'submit', submission: { ...submission, deduplicationKey: 'new-key' } })).body.accepted).toBe(true);
+  expect((await socketCall(f.socket, { command: 'list' })).body).toHaveLength(2);
+});
