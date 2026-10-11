@@ -98,7 +98,7 @@ MCP 只能绑定显式声明 `capability.execution.workspace: 'readonly'` 的能
 
 普通调用直接等待，逐次执行；同时到达的调用拒绝，不排队。没有自动重试、kill、统一 job 或取消工具。脚本非零返回由原能力解释为业务失败；启动/契约故障与 unknown 分开。断连或模型结束不证明工具停止：已启动工作继续，unknown 后拒绝再启动，parent attempt 不因 Agent exit marker 虚报停止；人工恢复必须核查记录中的所有工具容器。
 
-`show` 在当前 attempt 的 optional `toolCalls` 保存能力、环境、SHA、call ID、容器状态、结果与日志；每次调用只新增 `tools/CALL_ID` 日志/产物目录。MCP 返回至多 16 KiB 的 JSON 摘要，超过时明确 `summaryTruncated: true`，保留 bounded `businessPreview`/关键错误/产物预览（预览是文本，不要求统一业务 schema），完整结果是 `result.json`。`read_tool_file({callId,name,offset})` 提供 stdout.log、stderr.log、result.json 和已注册产物，base64 分块每次最多 64 KiB，以 `nextOffset` 续读，`truncated` 表示还有内容。拒绝跨调用路径、symlink 与非普通文件，不把宿主路径当读取入口。日志保留完整原始流，不做秘密过滤。服务退出不自动重连工具，旧记录仍用于人工核查。
+`show` 在当前 attempt 的 optional `toolCalls` 保存能力、环境、SHA、call ID、容器状态、结果与日志；每次调用只新增 `tools/CALL_ID` 日志/产物目录。MCP 返回至多 16 KiB 的 JSON 摘要，超过时明确 `summaryTruncated: true`，保留 bounded `businessPreview`/关键错误/产物预览（预览是文本，不要求统一业务 schema），完整结果是 `result.json`。`read_tool_file({callId,name,offset})` 提供 stdout.log、stderr.log、result.json 和已注册产物，base64 分块每次最多 64 KiB，以 `nextOffset` 续读，`truncated` 表示还有内容。拒绝跨调用路径、文件或证据父目录的 symlink 与非普通文件，不把宿主路径当读取入口。日志保留完整原始流，不做秘密过滤。服务退出不自动重连工具，旧记录仍用于人工核查。
 
 受控测试从 CLI/socket 建立角色尝试，通过真实 MCP stdio 与官方 client 验证成功、业务失败、启动故障、unknown、畸形参数、身份/路径拒绝及大日志读取；真实模型/镜像的验收另行授权执行，受控 Docker 替身不算真实执行验收。
 
