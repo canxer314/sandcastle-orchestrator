@@ -92,7 +92,7 @@ tools: [{
 }],
 ```
 
-MCP 只能绑定显式声明 `capability.execution.workspace: 'readonly'` 的能力；独立入口对这些能力也 readonly，机械保持同一执行限制。旧能力默认 rw 不变，不声明 readonly 则不能暴露为当前只读角色的工具。业务脚本只能写 `/artifacts` 或 `/tmp`。每个工具显式绑定已具备独立入口的 `capability`，参数经 strict Zod schema 和原 `capability.validate` 校验；不推断脚本契约。管理员声明业务参数与实际限制，不把身份或凭据作为工具参数。repo、SHA、attempt、当前 Sandcastle host worktree 与能力环境由宿主可信设施绑定；不调用工具能力的 SHA selector，不建立新的请求、尝试或并发占用。工具直接复用原 `capability.run(context)` 和真实 Docker `context.exec`/inspect 语义；独立 CLI 入口仍有自己的尝试与目录。
+MCP 只能绑定显式声明 `capability.execution.workspace: 'readonly'` 的能力；独立入口对这些能力也 readonly，机械保持同一执行限制。旧能力默认 rw 不变，不声明 readonly 则不能暴露为当前只读角色的工具。业务脚本只能写 `/artifacts` 或 `/tmp`。每个工具显式绑定已具备独立入口的 `capability`，参数经 strict Zod schema 和原 `capability.validate` 校验；与独立入口一致，校验器返回值或原地修改不改变执行输入（包括嵌套参数）。不推断脚本契约。管理员声明业务参数与实际限制，不把身份或凭据作为工具参数。repo、SHA、attempt、当前 Sandcastle host worktree 与能力环境由宿主可信设施绑定；不调用工具能力的 SHA selector，不建立新的请求、尝试或并发占用。工具直接复用原 `capability.run(context)` 和真实 Docker `context.exec`/inspect 语义；独立 CLI 入口仍有自己的尝试与目录。
 
 角色镜像只需可执行的 Node.js，无需安装 MCP SDK。容器内 `node /orchestrator-mcp/bridge.cjs` 仅将 stdio 字节转发到专属 `tools.sock`；官方 SDK、业务函数与 Docker client 留在宿主。只挂载此 attempt 的受限目录，角色 root/repo/MCP 挂载 readonly、无 Docker socket 和 management socket。代码使用当前 attempt worktree **readonly**，不是另行导出 snapshot；测试只能写 `/artifacts` 与 `/tmp`，需要原地 build/install 的能力不适合这个只读角色。工具使用能力绑定的无网络测试镜像，不继承角色模型认证环境，管理员仍须保证镜像可信与能力输入校验不接受凭据。
 
