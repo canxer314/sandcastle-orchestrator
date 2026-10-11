@@ -249,6 +249,19 @@ export class Records {
     } catch (error) { this.db.exec('ROLLBACK'); throw error; }
   }
 
+  markExecutionFailure(id: string, configVersion: string) {
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const changed = this.db.prepare("UPDATE executions SET status = 'start_failed' WHERE id = ? AND status = 'queued'").run(id).changes;
+      if (changed) {
+        const previous = this.management(id).startFailures ?? [];
+        this.saveManagement(id, {startFailures:[...previous, {recordedAt:new Date().toISOString(),configVersion,
+          classification:'execution_start_failure',reason:'Execution failed before a durable attempt could start',logEvent:'execution_failure'}]});
+      }
+      this.db.exec('COMMIT');
+    } catch (error) {this.db.exec('ROLLBACK');throw error;}
+  }
+
   markUnresolved(id: string, error: unknown) {
     this.unresolved.set(id, error instanceof Error ? error.message : 'Required record save failed');
   }
