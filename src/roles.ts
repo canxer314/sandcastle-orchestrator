@@ -1,4 +1,6 @@
 import { spawn, execFile } from 'node:child_process';
+import { createWriteStream } from 'node:fs';
+import { pipeline } from 'node:stream/promises';
 import { promisify } from 'node:util';
 import { appendFile, mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -54,7 +56,12 @@ export async function executeRole(records:Records, config:Configuration, executi
         child.stdout.on('data',(chunk:Buffer)=>{stdout=(stdout+chunk.toString()).slice(-65536);line+=chunk.toString();let newline;while((newline=line.indexOf('\n'))>=0){opts?.onLine?.(line.slice(0,newline));line=line.slice(newline+1)}save('stdout',chunk);});
         child.stderr.on('data',(chunk:Buffer)=>{stderr=(stderr+chunk.toString()).slice(-65536);save('stderr',chunk);});
         child.once('error',reject);child.once('close',async code=>{try{await writes;if(writeError)throw writeError;if(line)opts?.onLine?.(line);if(code===null)throw Error('Docker exec exit unavailable');resolve({stdout,stderr,exitCode:code})}catch(error){reject(error)}});child.stdin.on('error',()=>{});child.stdin.end(opts?.stdin);
-      }),copyFileIn:async()=>{throw Error('Read-only report does not permit file injection')},copyFileOut:async(from,to)=>{await command(['cp',`${container}:${from}`,to])},close:async()=>{ /* No automatic stop/remove: retained for audited administrator cleanup. */ }};
+      }),copyFileIn:async()=>{throw Error('Read-only report does not permit file injection')},copyFileOut:async(from,to)=>{
+        const child=spawn(binary,['exec','-i',container,'cat','--',from],{env:{PATH:process.env.PATH},stdio:['ignore','pipe','ignore']});
+        const exited=new Promise<void>((resolve,reject)=>{child.once('error',reject);child.once('close',code=>code===0?resolve():reject(Error('Docker file export failed; inspect the recorded container identity')))});
+        const copied=pipeline(child.stdout,createWriteStream(to));
+        try{await Promise.all([exited,copied])}catch(error){child.kill();await Promise.allSettled([exited,copied]);throw error}
+      },close:async()=>{ /* No automatic stop/remove: retained for audited administrator cleanup. */ }};
     }});
     const sandbox=await createSandbox({cwd:workspace,branch,baseBranch:sha,sandbox:sandboxProvider});
     const result=await runAgent(sandbox,provider.agent,prompt);
