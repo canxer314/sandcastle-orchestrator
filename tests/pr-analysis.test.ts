@@ -17,7 +17,7 @@ test.each([false,true])('public PR snapshot tool reads only administrator-author
   expect(()=>run({number:4})).toThrow();expect(()=>run({number:3,repo:'other/repo'})).toThrow();
 });
 
-test.each(['normal','large','denied','tool-failure','save-failure','scope-change','report-save-failure','business-save-failure','unicode'])('role invokes its authorized readonly tool and CLI separates observed facts from %s model report',async mode=>{
+test.each(['normal','large','denied','tool-failure','save-failure','scope-change','report-save-failure','business-save-failure','unicode','unicode-preview','large-cancelled'])('role invokes its authorized readonly tool and CLI separates observed facts from %s model report',async mode=>{
   const dir=await mkdtemp(join(tmpdir(),'orch-pr-run-'));dirs.push(dir);
   const repo=join(dir,'repo');const data=join(dir,'data');const configuration=join(dir,'config');
   const {mkdir}=await import('node:fs/promises');for(const path of [repo,data,configuration])await mkdir(path);
@@ -31,10 +31,10 @@ const received=await new Promise((resolve,reject)=>{const child=spawn(process.ex
   await writeFile(docker,`#!/usr/bin/env node
 const fs=require('node:fs');const cp=require('node:child_process');const args=process.argv.slice(2);const state=${JSON.stringify(join(dir,'mount'))};
 if(args[0]==='run'){const mount=args.find(a=>a.includes('dst=/orchestrator-tools,'));fs.writeFileSync(state,mount?mount.match(/src=([^,]+)/)[1]:'');${mode==='save-failure'?`if(mount){const tools=mount.match(/src=([^,]+)/)[1];fs.unlinkSync(tools+'/../artifacts/observations.jsonl');fs.mkdirSync(tools+'/../artifacts/observations.jsonl');}`:''}console.log('controlled');${['report-save-failure','business-save-failure'].includes(mode)?`if(mount){const tools=mount.match(/src=([^,]+)/)[1];fs.mkdirSync(tools+'/../artifacts/${mode==='report-save-failure'?'report.txt':'business.json'}');}`:''}}
-else if(args[0]==='exec'){const text=args.at(-1);if(text.includes('ORCH_EXIT_')){const mount=fs.readFileSync(state,'utf8');try{${mode==='unicode'?`console.log(cp.execFileSync(process.execPath,[${JSON.stringify(join(dir,'unicode.mjs'))},mount],{encoding:'utf8'}).trim());`:''}const facts=JSON.parse(cp.execFileSync(process.execPath,[mount+'/call.mjs','pr-snapshot',${JSON.stringify(JSON.stringify({number:mode==='denied'?4:3}))}],{env:{ORCHESTRATOR_TOOL_SOCKET:mount+'/tools.sock'},encoding:'utf8'}));console.log('Report: '+facts.pullRequest.body+'; source administrator snapshot, missing '+facts.pullRequest.missing.join(', ')+${mode==='large'||mode==='business-save-failure'?"'x'.repeat(9*1024*1024)+' END-OF-REPORT'":"''"});}catch(e){console.log('Unable to collect authorized PR evidence');}console.log(text.match(/ORCH_EXIT_[a-f0-9]+/)[0]+':0');}else if(text.includes('rev-parse'))console.log(${JSON.stringify(sha)});}
+else if(args[0]==='exec'){const text=args.at(-1);if(text.includes('ORCH_EXIT_')){${mode==='large-cancelled'?`const stop=fs.readFileSync(state,'utf8')+'/../stop/requested';const deadline=Date.now()+10000;while(!fs.existsSync(stop)){if(Date.now()>deadline)process.exit(1);Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,20);}`:''}const mount=fs.readFileSync(state,'utf8');try{${mode==='unicode'?`console.log(cp.execFileSync(process.execPath,[${JSON.stringify(join(dir,'unicode.mjs'))},mount],{encoding:'utf8'}).trim());`:''}const facts=JSON.parse(cp.execFileSync(process.execPath,[mount+'/call.mjs','pr-snapshot',${JSON.stringify(JSON.stringify({number:mode==='denied'?4:3}))}],{env:{ORCHESTRATOR_TOOL_SOCKET:mount+'/tools.sock'},encoding:'utf8'}));console.log('Report: '+facts.pullRequest.body+'; source administrator snapshot, missing '+facts.pullRequest.missing.join(', ')+${mode==='large'||mode==='business-save-failure'||mode==='large-cancelled'?"'x'.repeat(9*1024*1024)+' END-OF-REPORT'":"''"});}catch(e){console.log('Unable to collect authorized PR evidence');}console.log(text.match(/ORCH_EXIT_[a-f0-9]+/)[0]+':0');}else if(text.includes('rev-parse'))console.log(${JSON.stringify(sha)});}
 `,{mode:0o700});
   const evidence=join(configuration,'snapshot.json');await writeFile(evidence,JSON.stringify({version:'v1',collectedAt:'2026-10-10T12:00:00Z',pullRequests:[{repo:'owner/repo',number:3,url:'https://github.com/owner/repo/pull/3',updatedAt:'2026-10-10T11:00:00Z',headSha:sha,body:'missing input validation',reviews:[],diff:'code evidence',missing:['review threads'],truncated:false}]}));
-  const config=join(configuration,'config.ts');await writeFile(config,`import {createPrSnapshotTool,createPrAnalysisRole} from ${JSON.stringify(join(root,'src/pr-analysis.ts'))}; export default {version:'config-v1',repos:[{id:'sample',location:${JSON.stringify(repo)}}],environments:[{id:'readonly',docker:{image:'controlled:image',binary:${JSON.stringify(docker)}}}],capabilities:[],tools:[${mode==='unicode'?`{id:'unicode',description:'Echo observed Unicode',async read(input){return input}},`:''}createPrSnapshotTool({path:${JSON.stringify(evidence)},repo:'owner/repo',pullRequests:[3]})],roles:[${mode==='unicode'?`{...createPrAnalysisRole({repo:'owner/repo',pullRequests:[3]}),tools:['pr-snapshot','unicode']}`:`createPrAnalysisRole({repo:'owner/repo',pullRequests:[3]})`}],providers:[{id:'controlled',agent:{name:'controlled',env:{},captureSessions:false,buildPrintCommand(){return {command:'controlled-agent'}},parseStreamLine(line){return [{type:'result',result:line}]}}}],roleBindings:[{role:'pr-analysis',provider:'controlled',environment:'readonly',commit(){return '${sha}'}}]}`);
+  const config=join(configuration,'config.ts');await writeFile(config,`import {createPrSnapshotTool,createPrAnalysisRole} from ${JSON.stringify(join(root,'src/pr-analysis.ts'))}; export default {version:'config-v1',repos:[{id:'sample',location:${JSON.stringify(repo)}}],environments:[{id:'readonly',docker:{image:'controlled:image',binary:${JSON.stringify(docker)}}}],capabilities:[],tools:[${mode==='unicode'?`{id:'unicode',description:'Echo observed Unicode',async read(input){return input}},`:''}createPrSnapshotTool({path:${JSON.stringify(evidence)},repo:'owner/repo',pullRequests:[3]})],roles:[${mode==='unicode'?`{...createPrAnalysisRole({repo:'owner/repo',pullRequests:[3]}),tools:['pr-snapshot','unicode']}`:`createPrAnalysisRole({repo:'owner/repo',pullRequests:[3]})`}],providers:[{id:'controlled',agent:{name:'controlled',env:{},captureSessions:false,buildPrintCommand(){return {command:'controlled-agent'}},parseStreamLine(line){return [{type:'result',result:${mode==='unicode-preview'?"'Report: '+'a'.repeat(65522)+'中😀中文 END-OF-REPORT; source administrator snapshot, missing review threads'":"line"}}]}}}],roleBindings:[{role:'pr-analysis',provider:'controlled',environment:'readonly',commit(){return '${sha}'}}]}`);
   const child=spawn(process.execPath,['--import','tsx','src/cli.ts','serve','--config',config,'--data',data],{cwd:root});
   try {
     await new Promise<void>((resolve,reject)=>{let out='';let err='';const timer=setTimeout(()=>reject(Error(err||'not ready')),10000);child.stdout.on('data',d=>{out+=d;if(out.includes('ready')){clearTimeout(timer);resolve();}});child.stderr.on('data',d=>err+=d);child.once('exit',()=>{clearTimeout(timer);reject(Error(err));});});
@@ -42,9 +42,23 @@ else if(args[0]==='exec'){const text=args.at(-1);if(text.includes('ORCH_EXIT_'))
     const {call}=await import('../src/control.js');const socket=join(data,'control.sock');
     expect(await call(socket,{command:'submit',submission:{repo:'sample',capability:'pr-analysis',input:{sha,pullRequests:[4]},source:'test'}})).toMatchObject({accepted:false});
     const receipt=await call(socket,{command:'submit',submission:{repo:'sample',capability:'pr-analysis',input:{sha,pullRequests:[3]},source:'test'}}) as any;
-    await expect.poll(async()=>(await call(socket,{command:'show',id:receipt.executionId}) as any).execution.status,{timeout:10000}).toBe(['report-save-failure','business-save-failure'].includes(mode)?'unknown':'completed');
+    if(mode==='large-cancelled') {
+      await expect.poll(async()=>(await call(socket,{command:'show',id:receipt.executionId}) as any).execution.status).toBe('running');
+      await call(socket,{command:'cancel',id:receipt.executionId,reason:'operator'});
+    }
+    await expect.poll(async()=>(await call(socket,{command:'show',id:receipt.executionId}) as any).execution.status,{timeout:10000}).toBe(mode==='large-cancelled'?'cancelled':['report-save-failure','business-save-failure'].includes(mode)?'unknown':'completed');
     const cli=(...args:string[])=>JSON.parse(execFileSync(process.execPath,['--import','tsx','src/cli.ts',...args,'--socket',socket],{cwd:root,encoding:'utf8',maxBuffer:2*1024*1024}));
     const detail=cli('show',receipt.executionId);
+    if(mode==='unicode-preview') {
+      expect(Buffer.byteLength(detail.attempts[0].output)).toBeLessThanOrEqual(65536);
+      expect(detail.attempts[0].output.slice(-12)).toBe('a'.repeat(11)+'中');
+      expect(detail.attempts[0].outputTruncated).toBe(true);
+      expect(detail.attempts[0].report).toMatchObject({complete:true,truncated:false});
+      const artifact=cli('artifact',receipt.executionId,'--name','report.txt');
+      expect(Buffer.from(artifact.content,'base64').toString('utf8')).toBe('Report: '+'a'.repeat(65522)+'中😀中文 END-OF-REPORT; source administrator snapshot, missing review threads');
+      expect(detail.request.input).toEqual({sha,pullRequests:[3]});
+      expect(detail.attempts[0].actualSha).toBe(sha);return;
+    }
     if(mode==='unicode') {
       const logs=cli('logs',receipt.executionId);expect(logs.stdout).toContain('"observed":"中文"');expect(logs.stdout).toContain('"received":"中文"');return;
     }
@@ -59,7 +73,15 @@ else if(args[0]==='exec'){const text=args.at(-1);if(text.includes('ORCH_EXIT_'))
       const artifact=cli('artifact',receipt.executionId,'--name','observations.jsonl');
       const facts=JSON.parse(Buffer.from(artifact.content,'base64').toString().trim());expect(facts.error).toContain('unavailable');expect(facts.result).toBeUndefined();return;
     }
-    if(mode==='large') {
+    if(mode==='large-cancelled') {
+      expect(detail.attempts[0].businessReference).toBeUndefined();
+      expect(detail.attempts[0].business).toBeUndefined();expect(detail.attempts[0].contract).toBeUndefined();
+      expect(detail.attempts[0].stopConfirmation).toMatchObject({kind:'agent-exit-marker',exitCode:0});
+      expect(detail.request.input).toEqual({sha,pullRequests:[3]});expect(detail.attempts[0].actualSha).toBe(sha);
+      const observed=cli('artifact',receipt.executionId,'--name','observations.jsonl');
+      expect(JSON.parse(Buffer.from(observed.content,'base64').toString().trim()).result.pullRequest.headSha).toBe(sha);
+    }
+    if(mode==='large'||mode==='large-cancelled') {
       expect(detail.attempts[0].report).toMatchObject({name:'report.txt',complete:true,truncated:false});
       let offset=0;let report='';let chunk;
       do {chunk=cli('artifact',receipt.executionId,'--name','report.txt','--offset',String(offset));const bytes=Buffer.from(chunk.content,'base64');offset+=bytes.length;report+=bytes.toString();}while(!chunk.complete);
@@ -67,6 +89,7 @@ else if(args[0]==='exec'){const text=args.at(-1);if(text.includes('ORCH_EXIT_'))
       expect(cli('logs',receipt.executionId).truncated.stdout).toBe(true);return;
     }
     expect(detail.attempts[0].business).toContain('missing input validation');
+    expect(detail.attempts[0].outputTruncated).toBeUndefined();
     const artifact=cli('artifact',receipt.executionId,'--name','observations.jsonl');const facts=JSON.parse(Buffer.from(artifact.content,'base64').toString().trim());
     expect(facts).toMatchObject({tool:'pr-snapshot',input:{number:3},result:{source:{kind:'administrator-snapshot',version:'v1',verifiedAgainstGitHub:false},pullRequest:{number:3,headSha:sha}}});
     expect(cli('logs',receipt.executionId).stdout).toContain('source administrator snapshot');

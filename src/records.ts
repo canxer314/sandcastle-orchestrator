@@ -234,7 +234,7 @@ export class Records {
       if (previous.kind === 'agent' && !suppliedStop) state = 'unknown';
       facts = {...facts, stopConfirmation: suppliedStop ?? (previous.kind === 'agent' ? undefined : previous.containerState?.Running === false ? {kind:'docker-inspect',confirmedAt:new Date().toISOString(),containerState:previous.containerState} : {kind:'never-started',confirmedAt:new Date().toISOString()})};
       const cancelledFacts = {...previous,...facts} as Record<string,unknown>;
-      delete cancelledFacts.business; delete cancelledFacts.contract;
+      delete cancelledFacts.business; delete cancelledFacts.businessReference; delete cancelledFacts.contract;
       facts = cancelledFacts;
     }
     this.db.exec('BEGIN IMMEDIATE');

@@ -71,7 +71,13 @@ export async function executeRole(records:Records, config:Configuration, executi
     const sandbox=await createSandbox({cwd:workspace,branch,baseBranch:sha,sandbox:sandboxProvider});
     const result=await runAgent(sandbox,provider.agent,prompt);
     const largeOutput=result.output!==null && Buffer.byteLength(result.output)>65536;
-    const facts={...result,output:largeOutput?result.output!.slice(0,65536):result.output,...(largeOutput?{outputTruncated:true}:{}),endedAt:new Date().toISOString(),logs:{complete:result.exitCode!==null && !result.error},stopConfirmation:result.exitCode===null?undefined:{kind:'agent-exit-marker',confirmedAt:new Date().toISOString(),exitCode:result.exitCode}};
+    let output=result.output;
+    if(largeOutput) {
+      const bytes=Buffer.from(output!);let end=65536;
+      while((bytes[end]! & 0xc0)===0x80)end--;
+      output=bytes.subarray(0,end).toString('utf8');
+    }
+    const facts={...result,output,...(largeOutput?{outputTruncated:true}:{}),endedAt:new Date().toISOString(),logs:{complete:result.exitCode!==null && !result.error},stopConfirmation:result.exitCode===null?undefined:{kind:'agent-exit-marker',confirmedAt:new Date().toISOString(),exitCode:result.exitCode}};
     // Keep lifecycle evidence available to every storage-failure path; stopConfirmation
     // is saved with the final state because it also closes the mutable-attempt guard.
     let report:object|undefined;
