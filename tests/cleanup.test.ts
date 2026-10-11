@@ -43,6 +43,26 @@ async function historical(f:Awaited<ReturnType<typeof fixture>>,state:string,fac
  db.prepare('UPDATE attempts SET run_state=?, facts=?').run(state,JSON.stringify({...old,...facts}));db.prepare('UPDATE executions SET status=?').run(state);db.close();
 }
 
+test('CLI cancellation of an ended start_failed attempt preserves audit without blocking thirty-day cleanup',async()=>{
+ const f=await fixture();await historical(f,'start_failed');await start(f);
+ const cancelled=await cli(f.socket,['cancel','execution','--reason','retire failed launch']);
+ expect(cancelled).toMatchObject({execution:{status:'start_failed',cancellation:{reason:'retire failed launch'}},attempts:[{runState:'start_failed',endedAt:'2026-01-01T00:00:00Z',cancellation:{reason:'retire failed launch'}}]});
+ expect(cancelled.attempts[0].stopConfirmation).toBeUndefined();
+ expect(await cli(f.socket,['cleanup'])).toMatchObject({attempts:[{attemptId:'attempt',status:'cleaned'}]});
+ expect(await cli(f.socket,['logs','execution'])).toMatchObject({availability:'cleaned',complete:false});
+ expect(await cli(f.socket,['show','execution'])).toMatchObject({attempts:[{runState:'start_failed',cancellation:{reason:'retire failed launch'},cleanup:{status:'cleaned'}}]});
+});
+
+test('CLI cleanup includes a cancelled-intent start_failed history after a completed retry ages thirty days',async()=>{
+ const f=await fixture();await historical(f,'start_failed',{cancellation:{reason:'retire failed launch',requestedAt:'2025-12-31T00:00:00Z'}});
+ const db=new DatabaseSync(join(f.data,'records.sqlite'));
+ db.prepare('INSERT INTO attempts VALUES(?,?,?,?,?,?,?)').run('retry-attempt','execution','v1','test','test','completed',JSON.stringify({endedAt:'2026-01-01T00:00:00Z',actualSha:'sha',logs:{complete:true}}));
+ db.prepare('UPDATE executions SET status=?').run('completed');db.close();
+ await start(f);
+ expect(await cli(f.socket,['cleanup'])).toEqual({attempts:[{attemptId:'attempt',status:'cleaned'},{attemptId:'retry-attempt',status:'cleaned'}]});
+ expect(await cli(f.socket,['show','execution'])).toMatchObject({execution:{status:'completed'},attempts:[{runState:'start_failed',cancellation:{reason:'retire failed launch'},cleanup:{status:'cleaned'}},{runState:'completed',cleanup:{status:'cleaned'}}]});
+});
+
 test.each([
  ['not thirty days','completed',{endedAt:'2026-01-01T00:00:00.001Z'}],
  ['missing end time','completed',{endedAt:null}],

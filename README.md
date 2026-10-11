@@ -108,7 +108,7 @@ socket 对应命令为 `cancel/confirm-stop/resolve/retry`，使用 `id`、`reas
 pnpm start cleanup --socket /srv/orchestrator-data/control.sock
 ```
 
-socket 请求为 `{"command":"cleanup"}`，返回 `attempts` 中本次处理或已清理的尝试及 `status`，文件失败带 `reason`。只有整个执行已结束满 30 天、全部尝试已结束且无活跃入口、未决、停止未确认或待核对证据才清理。人工 resolve 从核对结束的记录时间起计时；旧记录缺少可信结束时间则保留，不猜测。重试排队或运行时保留该执行全部历史证据。
+socket 请求为 `{"command":"cleanup"}`，返回 `attempts` 中本次处理或已清理的尝试及 `status`，文件失败带 `reason`。只有整个执行已结束满 30 天、全部尝试已结束且无活跃入口、未决、停止未确认或待核对证据才清理。人工 resolve 从核对结束的记录时间起计时；旧记录缺少可信结束时间则保留，不猜测。重试排队或运行时保留该执行全部历史证据。明确启动失败且已结束的 `start_failed` 尝试，事后 cancel 仅保留取消审计，不额外要求停止确认，也不阻挡已结束重试执行的到期清理；真正取消但停止未确认的尝试仍保留。
 
 只 unlink `DATA/attempts/ID/stdout.log`、`stderr.log` 及已登记的单层普通产物文件；另清理 role 的 `context` 校验快照（仅编排器写入、从不挂载或交给 provider）。不删除整个尝试目录，不处理未登记文件、确定性能力可写 workspace、工具日志、provider session/worktree、容器或远端对象。可写 workspace 和未登记产物可能包含工具自有资源，归属无法确认时保守保留，管理员核对后另行处理。拒绝符号链接与非普通目标；没有 provider 自动清理承诺。`cleaned` 仅表示上述已确认自有可弃内容已清理，不表示本地空间全部释放。同步本地删除与单写者状态操作串行，清理不停止或强杀执行。
 
