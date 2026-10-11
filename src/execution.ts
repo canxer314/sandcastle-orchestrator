@@ -78,16 +78,24 @@ export async function cancelExecution(records: Records, id: string) {
   }
 }
 
-export async function execute(records: Records, config: Configuration, executionId: string, data: string) {
-  const detail = records.show(executionId);
-  const capability = config.capabilities.find(c => c.id === detail.request.capability)!;
-  const environment = config.environments.find(e => e.id === capability?.environment)!;
-  if (!capability?.execution || !environment?.docker) return;
-  const commit = (detail.execution as {fixedSha?: string}).fixedSha ?? capability.execution.commit(detail.request.input);
-  if (typeof commit !== 'string' || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(commit)) throw new Error('Execution requires a full commit SHA');
-  const attempt = records.beginAttempt(executionId, config.version, capability.id, environment.id, commit);
-  const directory=join(data,'attempts',attempt);
-  const workspace=join(directory,'workspace'); const artifacts=join(directory,'artifacts');
+export async function execute(records: Records, config: Configuration, executionId: string, data: string, bound?: {
+  attemptId:string; capability:string; input:unknown; actualSha:string; workspace:string; directory:string; callId:string;
+  save(facts:Record<string,any>):void;
+}) {
+  let outcome:Record<string,any>={runState:'starting'};
+  const detail=records.show(executionId);
+  const input=bound?bound.input:detail.request.input;
+  const capability=config.capabilities.find(c=>c.id===(bound?.capability ?? detail.request.capability))!;
+  const environment=config.environments.find(e=>e.id===capability?.environment)!;
+  if(!capability?.execution || !environment?.docker)return outcome;
+  const commit=bound?.actualSha ?? (detail.execution as {fixedSha?:string}).fixedSha ?? capability.execution.commit(input);
+  if(typeof commit!=='string' || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(commit))throw Error('Execution requires a full commit SHA');
+  const attempt=bound?.attemptId ?? records.beginAttempt(executionId,config.version,capability.id,environment.id,commit);
+  const current=()=>records.show(executionId).attempts.find(a=>a.id===attempt);
+  const update=(facts:Record<string,any>)=>{if(bound){outcome={...outcome,...facts};bound.save(outcome)}else records.updateAttempt(attempt,facts)};
+  const finish=(state:string,facts:Record<string,any>)=>{if(bound){outcome={...outcome,...facts,runState:state};bound.save(outcome)}else records.finishAttempt(attempt,state,facts)};
+  const directory=bound?.directory ?? join(data,'attempts',attempt);
+  const workspace=bound?.workspace ?? join(directory,'workspace'); const artifacts=join(directory,'artifacts');
   let running=false;
   let pending=0;
   let closed=false;
@@ -101,19 +109,19 @@ export async function execute(records: Records, config: Configuration, execution
     if(actualSha!==commit)throw Error('Resolved commit differs from requested SHA');
     await mkdir(workspace,{recursive:true,mode:0o700});await mkdir(artifacts,{mode:0o700});
     await writeFile(join(directory,'stdout.log'),'');await writeFile(join(directory,'stderr.log'),'');
-    records.updateAttempt(attempt,{actualSha,workspace,artifactsDirectory:artifacts,logs:{complete:false},container:`orch-${attempt}`});
-    await snapshot(repo.location,actualSha,workspace);
-    const context:ExecutionContext={ actualSha, attemptId:attempt, input:detail.request.input, exec: argv=>{
+    update({actualSha,workspace,artifactsDirectory:artifacts,logs:{complete:false},container:`orch-${attempt}`});
+    if(!bound)await snapshot(repo.location,actualSha,workspace);
+    const context:ExecutionContext={ actualSha, attemptId:attempt, input, exec: argv=>{
       if (!Array.isArray(argv) || !argv.length || argv.some(arg=>typeof arg!=='string' || arg.includes('\0')))throw Error('Invalid command argv');
       if(closed)throw Error('Capability entrypoint already ended');
       if(unknownEnd)throw Error('A previous command end is unknown; no further commands may start');
       if(pending)throw Error('Commands within an attempt must be awaited sequentially');
-      const current = records.show(executionId).attempts.find(a=>a.id===attempt);
-      if(!current || current.cancellation || !['starting','running'].includes(current.runState)) throw Error('Attempt is no longer allowed to start commands');
-      const container=`orch-${attempt}-${++commandNumber}`;
-      records.updateAttempt(attempt,{runState:'running',logs:{complete:false},container});running=true;ended=false;pending++;
+      const latest = current();
+      if(!latest || latest.cancellation || !['starting','running'].includes(latest.runState)) throw Error('Attempt is no longer allowed to start commands');
+      const container=bound?`orch-${attempt}-tool-${bound.callId}-${++commandNumber}`:`orch-${attempt}-${++commandNumber}`;
+      update({runState:'running',logs:{complete:false},container});running=true;ended=false;pending++;
       const command = new Promise<{stdout:string;stderr:string;exitCode:number}>((resolve,reject)=>{
-        const child=spawn('docker',['run','--pull=never','--name',container,'--network','none','--cap-drop','ALL','--security-opt','no-new-privileges','--read-only','--user',`${process.getuid!()}:${process.getgid!()}`,'--tmpfs','/tmp:rw,nosuid,nodev,noexec','--mount',`type=bind,src=${workspace},dst=/workspace`,'--mount',`type=bind,src=${artifacts},dst=/artifacts`,'--workdir','/workspace','--entrypoint',argv[0],environment.docker!.image,...argv.slice(1)],{env:{PATH:process.env.PATH},stdio:['ignore','pipe','pipe']});
+        const child=spawn('docker',['run','--pull=never','--name',container,'--network','none','--cap-drop','ALL','--security-opt','no-new-privileges','--read-only','--user',`${process.getuid!()}:${process.getgid!()}`,'--tmpfs','/tmp:rw,nosuid,nodev,noexec','--mount',`type=bind,src=${workspace},dst=/workspace${bound || capability.execution?.workspace==='readonly'?',readonly':''}`,'--mount',`type=bind,src=${artifacts},dst=/artifacts`,'--workdir','/workspace','--entrypoint',argv[0],environment.docker!.image,...argv.slice(1)],{env:{PATH:process.env.PATH},stdio:['ignore','pipe','pipe']});
         let stdout='';let stderr='';let writes=Promise.resolve();let writeError:unknown;
         const onData=(stream:'stdout'|'stderr',chunk:Buffer)=>{
           if(stream==='stdout')stdout=(stdout+chunk.toString()).slice(-65536);else stderr=(stderr+chunk.toString()).slice(-65536);
@@ -133,7 +141,7 @@ export async function execute(records: Records, config: Configuration, execution
               running=false;throw Error(`Docker launch/entrypoint failed: ${state.Error}`);
             }
             if(state.Running!==false || state.Status!=='exited' || !Number.isInteger(state.ExitCode))throw Error('Container end information unavailable or container still running');
-            if(!closed)records.updateAttempt(attempt,{exitCode:state.ExitCode,signal,logs:{complete:code!==null && code===state.ExitCode},containerState:state});
+            if(!closed)update({exitCode:state.ExitCode,signal,logs:{complete:code!==null && code===state.ExitCode},containerState:state});
             ended=true;
             resolve({stdout,stderr,exitCode:state.ExitCode});
           } catch(error){reject(error)}
@@ -143,45 +151,46 @@ export async function execute(records: Records, config: Configuration, execution
       tracked.catch(()=>{});
       return tracked;
     }};
-    const beforeEntrypoint = records.show(executionId).attempts.at(-1);
-    if (!beforeEntrypoint || beforeEntrypoint.id !== attempt || beforeEntrypoint.stopConfirmation || ['completed','cancelled','resolved','start_failed'].includes(beforeEntrypoint.runState)) return;
+    const beforeEntrypoint = current();
+    if (!beforeEntrypoint || beforeEntrypoint.id !== attempt || beforeEntrypoint.stopConfirmation || ['completed','cancelled','resolved','start_failed'].includes(beforeEntrypoint.runState)) return outcome;
     if (beforeEntrypoint.cancellation) {
-      records.finishAttempt(attempt,'cancelled',{stopConfirmation:{kind:'never-started',confirmedAt:new Date().toISOString()},endedAt:new Date().toISOString()});
-      return;
+      finish('cancelled',{stopConfirmation:{kind:'never-started',confirmedAt:new Date().toISOString()},endedAt:new Date().toISOString()});
+      return outcome;
     }
     let returned:unknown;
     try { returned=await capability.run(context); }
     catch(error) {
       closed=true;
       if(ended && !pending && !unknownEnd) {
-        records.finishAttempt(attempt,'completed',{contract:'error',contractError:error instanceof Error?error.message:'Capability failed to interpret result',endedAt:new Date().toISOString()});
-        return;
+        finish('completed',{contract:'error',contractError:error instanceof Error?error.message:'Capability failed to interpret result',endedAt:new Date().toISOString()});
+        return outcome;
       }
       throw error;
     }
     finally {closed=true;}
-    if (!records.show(executionId).attempts.some(a=>a.id===attempt && (['starting','running'].includes(a.runState) || (a.runState==='unknown' && a.cancellation && records.isLive(attempt))) && !a.stopConfirmation)) return;
-    if(pending || unknownEnd){records.finishAttempt(attempt,'unknown',{error:pending?'Capability returned before its command ended':'A command ended without trustworthy container end information'});return;}
+    if (!records.show(executionId).attempts.some(a=>a.id===attempt && (['starting','running'].includes(a.runState) || (a.runState==='unknown' && a.cancellation && records.isLive(attempt))) && !a.stopConfirmation)) return outcome;
+    if(pending || unknownEnd){finish('unknown',{error:pending?'Capability returned before its command ended':'A command ended without trustworthy container end information'});return outcome;}
     let result: {business?:unknown;artifacts?:unknown} | null = null;
     try { result = JSON.parse(JSON.stringify(returned)); }
     catch (error) {
-      records.finishAttempt(attempt,'completed',{contract:'error',contractError:error instanceof Error?error.message:'Business result is not JSON serializable'});
-      return;
+      finish('completed',{contract:'error',contractError:error instanceof Error?error.message:'Business result is not JSON serializable'});
+      return outcome;
     }
     if(!result || typeof result!=='object' || !Object.hasOwn(result,'business') || (result.artifacts!==undefined && (!Array.isArray(result.artifacts) || result.artifacts.some((a:unknown)=>typeof a!=='string')))) {
-      records.finishAttempt(attempt,'completed',{contract:'error',contractError:'Expected { business, artifacts?: string[] }',endedAt:new Date().toISOString()});
-      return;
+      finish('completed',{contract:'error',contractError:'Expected { business, artifacts?: string[] }',endedAt:new Date().toISOString()});
+      return outcome;
     }
     const names = (result.artifacts ?? []) as string[];
     let artifactError: string | undefined;
     try { for(const name of names)await readArtifact(artifacts,name); }
     catch(error) { artifactError = error instanceof Error ? error.message : 'Invalid artifact'; }
-    records.finishAttempt(attempt,'completed',artifactError
+    finish('completed',artifactError
       ? {contract:'error',contractError:artifactError,endedAt:new Date().toISOString()}
       : {contract:'valid',business:result.business,artifacts:names.map((name:string)=>({name,attemptId:attempt,actualSha})),endedAt:new Date().toISOString()});
   } catch (error) {
     try {
-      records.finishAttempt(attempt,running?'unknown':'start_failed',{error:error instanceof Error?error.message:'Execution failed',endedAt:new Date().toISOString()});
-    } catch(saveError) { records.markUnresolved(attempt,saveError); }
-  } finally { records.endLive(attempt); }
+      finish(running?'unknown':'start_failed',{error:error instanceof Error?error.message:'Execution failed',endedAt:new Date().toISOString()});
+    } catch(saveError) {outcome={...outcome,runState:'unknown',persistenceError:String(saveError)};records.markUnresolved(attempt,saveError); }
+  } finally { if(!bound)records.endLive(attempt); }
+  return outcome;
 }

@@ -9,6 +9,7 @@ import type { Configuration } from './config.js';
 import type { Records } from './records.js';
 import { git, snapshot } from './execution.js';
 import { runAgent } from './agent.js';
+import { openRoleTools } from './mcp.js';
 const execFileAsync=promisify(execFile);
 
 export async function executeRole(records:Records, config:Configuration, executionId:string, data:string) {
@@ -23,7 +24,7 @@ export async function executeRole(records:Records, config:Configuration, executi
   if(typeof sha!=='string' || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(sha))throw Error('Role requires a full commit SHA');
   const attempt=records.beginAttempt(executionId,config.version,role.id,environment.id,sha,{kind:'agent',provider:provider.id,sessionPolicy:'new'});
   const directory=join(data,'attempts',attempt);const workspace=join(directory,'repo');const container=`orch-${attempt}-1`;const branch=`orch/${attempt}`;
-  let launched=false;
+  let launched=false;let tools:Awaited<ReturnType<typeof openRoleTools>>;
   try {
     await mkdir(workspace,{recursive:true,mode:0o700});
     // Validate the same fixed-tree boundary as deterministic execution before cloning.
@@ -46,8 +47,10 @@ export async function executeRole(records:Records, config:Configuration, executi
       const current=records.show(executionId).attempts.at(-1);
       if(current?.cancellation)throw Error('Cancellation requested before agent start');
       records.updateAttempt(attempt,{runState:'running'});launched=true;
+      const hostWorkspace=options.mounts.find(m=>m.sandboxPath==='/home/agent/workspace')?.hostPath;
+      if(role.tools.some(id=>config.tools?.some(t=>t.id===id && t.capability))) {if(!hostWorkspace)throw Error('Current role workspace mount unavailable');tools=await openRoleTools(records,config,executionId,attempt,directory,hostWorkspace,actualSha,role.tools);}
       const mounts=options.mounts.flatMap(m=>['--mount',`type=bind,src=${m.hostPath},dst=${m.sandboxPath},readonly`]);
-      await command(['run','--detach','--pull=never','--name',container,'--network',docker.network ?? 'none','--cap-drop','ALL','--security-opt','no-new-privileges','--read-only','--user',`${process.getuid!()}:${process.getgid!()}`,'--tmpfs','/tmp:rw,nosuid,nodev','--tmpfs',`/home/agent:rw,nosuid,nodev,uid=${process.getuid!()},gid=${process.getgid!()},mode=0700`,...mounts,'--mount',`type=bind,src=${stopDirectory},dst=/orchestrator-stop,readonly`,...Object.entries({...options.env,HOME:'/home/agent',GIT_CONFIG_NOSYSTEM:'1',GIT_CONFIG_SYSTEM:'/dev/null',GIT_TERMINAL_PROMPT:'0',GIT_NO_REPLACE_OBJECTS:'1',GIT_NO_LAZY_FETCH:'1'}).flatMap(([key,value])=>['--env',`${key}=${value}`]),'--entrypoint','sh',docker.image,'-c','while :; do sleep 3600; done']);
+      await command(['run','--detach','--pull=never','--name',container,'--network',docker.network ?? 'none','--cap-drop','ALL','--security-opt','no-new-privileges','--read-only','--user',`${process.getuid!()}:${process.getgid!()}`,'--tmpfs','/tmp:rw,nosuid,nodev','--tmpfs',`/home/agent:rw,nosuid,nodev,uid=${process.getuid!()},gid=${process.getgid!()},mode=0700`,...mounts,...(tools?['--mount',`type=bind,src=${tools.mcpDirectory},dst=/orchestrator-mcp,readonly`]:[]),'--mount',`type=bind,src=${stopDirectory},dst=/orchestrator-stop,readonly`,...Object.entries({...options.env,HOME:'/home/agent',GIT_CONFIG_NOSYSTEM:'1',GIT_CONFIG_SYSTEM:'/dev/null',GIT_TERMINAL_PROMPT:'0',GIT_NO_REPLACE_OBJECTS:'1',GIT_NO_LAZY_FETCH:'1'}).flatMap(([key,value])=>['--env',`${key}=${value}`]),'--entrypoint','sh',docker.image,'-c','while :; do sleep 3600; done']);
       const sandboxPath='/home/agent/workspace';
       return {worktreePath:sandboxPath,exec:(text,opts)=>new Promise((resolve,reject)=>{
         const child=spawn(binary,['exec','-i','--workdir',opts?.cwd ?? sandboxPath,container,'sh','-c',text],{env:{PATH:process.env.PATH},stdio:['pipe','pipe','pipe']});
@@ -64,7 +67,9 @@ export async function executeRole(records:Records, config:Configuration, executi
       },close:async()=>{ /* No automatic stop/remove: retained for audited administrator cleanup. */ }};
     }});
     const sandbox=await createSandbox({cwd:workspace,branch,baseBranch:sha,sandbox:sandboxProvider});
-    const result=await runAgent(sandbox,provider.agent,prompt);
+    const agent=tools?{...provider.agent,buildPrintCommand(options:Parameters<typeof provider.agent.buildPrintCommand>[0]){const command=provider.agent.buildPrintCommand(options);return {...command,command:command.command+' --strict-mcp-config --mcp-config /orchestrator-mcp/config.json'}}}:provider.agent;
+    const result=await runAgent(sandbox,agent,prompt);
+    if(tools?.unresolved()){records.finishAttempt(attempt,'unknown',{...result,error:'Tool execution still active or result unknown; agent exit does not prove tool stop',logs:{complete:false}});return;}
     const facts={...result,endedAt:new Date().toISOString(),logs:{complete:result.exitCode!==null && !result.error},stopConfirmation:result.exitCode===null?undefined:{kind:'agent-exit-marker',confirmedAt:new Date().toISOString(),exitCode:result.exitCode}};
     if(result.exitCode===null){records.finishAttempt(attempt,'unknown',{...facts,error:result.error ?? 'Agent exit evidence unavailable'});return;}
     try {
@@ -74,5 +79,5 @@ export async function executeRole(records:Records, config:Configuration, executi
       records.finishAttempt(attempt,'completed',{...facts,contract:'valid',business:parsed});
     }catch(error){records.finishAttempt(attempt,'completed',{...facts,contract:'error',contractError:error instanceof Error?error.message:'Invalid role report'});}
   }catch(error){try{records.finishAttempt(attempt,launched?'unknown':'start_failed',{error:error instanceof Error?error.message:'Role launch failed'})}catch(saveError){records.markUnresolved(attempt,saveError)}}
-  finally{records.endLive(attempt)}
+  finally{await tools?.close();records.endLive(attempt)}
 }
