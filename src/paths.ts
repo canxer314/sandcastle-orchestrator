@@ -1,4 +1,4 @@
-import { realpath } from 'node:fs/promises';
+import { realpath, lstat } from 'node:fs/promises';
 import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 import type { Configuration } from './config.js';
 
@@ -24,5 +24,12 @@ export async function checkDataSeparation(data: string, configPath: string, conf
     if (contains(runtime, protectedPath) || contains(protectedPath, runtime)) {
       throw new Error('Runtime data must be separate from application, configuration and target checkouts');
     }
+  }
+}
+
+export async function checkToolEvidenceDirectories(directory: string, callId: string, artifact: boolean, allowMissing = false) {
+  for (const path of [dirname(dirname(directory)), dirname(directory), directory, join(directory, 'tools'), join(directory, 'tools', callId), ...(artifact ? [join(directory, 'tools', callId, 'artifacts')] : [])]) {
+    try { if (!(await lstat(path)).isDirectory()) throw Error('Tool evidence path is not a physical directory'); }
+    catch (error) { if (!allowMissing || (error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
   }
 }

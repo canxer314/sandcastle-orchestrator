@@ -10,7 +10,7 @@ import type { Records } from './records.js';
 import { git, snapshot, cancelExecution } from './execution.js';
 import { runAgent } from './agent.js';
 import { serveRoleTools } from './role-tools.js';
-import { prepareMcp } from './mcp.js';
+import { openRoleTools, configureClaudeMcp, prepareMcp } from './mcp.js';
 const execFileAsync=promisify(execFile);
 
 export async function executeRole(records:Records, config:Configuration, executionId:string, data:string) {
@@ -26,6 +26,7 @@ export async function executeRole(records:Records, config:Configuration, executi
   const attempt=records.beginAttempt(executionId,config.version,role.id,environment.id,sha,{kind:'agent',provider:provider.id,sessionPolicy:'new',attemptDeadlineSeconds:binding.attemptDeadlineSeconds});
   const directory=join(data,'attempts',attempt);const workspace=join(directory,'repo');const container=`orch-${attempt}-1`;const branch=`orch/${attempt}`;
   let launched=false;
+  let tools:Awaited<ReturnType<typeof openRoleTools>>;
   let toolObservationError:string|undefined;
   let lifecycleFacts:Record<string,unknown>={};
   let toolServer:Awaited<ReturnType<typeof serveRoleTools>>|undefined;
@@ -78,8 +79,10 @@ export async function executeRole(records:Records, config:Configuration, executi
       const current=records.show(executionId).attempts.at(-1);
       if(current?.cancellation){records.finishAttempt(attempt,'cancelled',{stopConfirmation:{kind:'never-started',confirmedAt:new Date().toISOString()},endedAt:new Date().toISOString()});throw Error('Cancellation requested before agent start');}
       records.updateAttempt(attempt,{runState:'running'});launched=true;
+      const hostWorkspace=options.mounts.find(m=>m.sandboxPath==='/home/agent/workspace')?.hostPath;
+      if(role.tools.some(id=>config.tools?.some(t=>t.id===id && t.capability))) {if(!hostWorkspace)throw Error('Current role workspace mount unavailable');tools=await openRoleTools(records,config,{executionId,attemptId:attempt,directory,workspace:hostWorkspace,actualSha,toolIds:role.tools});}
       const mounts=[...options.mounts,...mcp.mounts].flatMap(m=>['--mount',`type=bind,src=${m.hostPath},dst=${m.sandboxPath},readonly`]);
-      await command(['run','--detach','--pull=never','--name',container,'--network',docker.network ?? 'none','--cap-drop','ALL','--security-opt','no-new-privileges','--read-only','--user',`${process.getuid!()}:${process.getgid!()}`,'--tmpfs','/tmp:rw,nosuid,nodev','--tmpfs',`/home/agent:rw,nosuid,nodev,uid=${process.getuid!()},gid=${process.getgid!()},mode=0700`,...mounts,...(callableTools.length?['--mount',`type=bind,src=${toolDirectory},dst=/orchestrator-tools,readonly`]:[]),'--mount',`type=bind,src=${stopDirectory},dst=/orchestrator-stop,readonly`,...Object.entries({...options.env,HOME:'/home/agent',GIT_CONFIG_NOSYSTEM:'1',GIT_CONFIG_SYSTEM:'/dev/null',GIT_TERMINAL_PROMPT:'0',GIT_NO_REPLACE_OBJECTS:'1',GIT_NO_LAZY_FETCH:'1'}).flatMap(([key,value])=>['--env',`${key}=${value}`]),'--entrypoint','sh',docker.image,'-c','while :; do sleep 3600; done']);
+      await command(['run','--detach','--pull=never','--name',container,'--network',docker.network ?? 'none','--cap-drop','ALL','--security-opt','no-new-privileges','--read-only','--user',`${process.getuid!()}:${process.getgid!()}`,'--tmpfs','/tmp:rw,nosuid,nodev','--tmpfs',`/home/agent:rw,nosuid,nodev,uid=${process.getuid!()},gid=${process.getgid!()},mode=0700`,...mounts,...(tools?['--mount',`type=bind,src=${tools.mcpDirectory},dst=/orchestrator-mcp,readonly`]:[]),...(callableTools.length?['--mount',`type=bind,src=${toolDirectory},dst=/orchestrator-tools,readonly`]:[]),'--mount',`type=bind,src=${stopDirectory},dst=/orchestrator-stop,readonly`,...Object.entries({...options.env,HOME:'/home/agent',GIT_CONFIG_NOSYSTEM:'1',GIT_CONFIG_SYSTEM:'/dev/null',GIT_TERMINAL_PROMPT:'0',GIT_NO_REPLACE_OBJECTS:'1',GIT_NO_LAZY_FETCH:'1'}).flatMap(([key,value])=>['--env',`${key}=${value}`]),'--entrypoint','sh',docker.image,'-c','while :; do sleep 3600; done']);
       const sandboxPath='/home/agent/workspace';
       return {worktreePath:sandboxPath,exec:(text,opts)=>new Promise((resolve,reject)=>{
         const child=spawn(binary,['exec','-i','--workdir',opts?.cwd ?? sandboxPath,container,'sh','-c',text],{env:{PATH:process.env.PATH},stdio:['pipe','pipe','pipe']});
@@ -96,6 +99,7 @@ export async function executeRole(records:Records, config:Configuration, executi
       },close:async()=>{ /* No automatic stop/remove: retained for audited administrator cleanup. */ }};
     }});
     const sandbox=await createSandbox({cwd:workspace,branch,baseBranch:sha,sandbox:sandboxProvider});
+    if(tools)agent=(provider.configureMcp ?? configureClaudeMcp)(provider.agent,[...mcp.connections,{service:'orchestrator',configFile:'/orchestrator-mcp/config.json',tools:role.tools.filter(id=>config.tools?.some(t=>t.id===id && t.capability))}]);
     const result=await runAgent(sandbox,agent,prompt,()=>{if(deadlineTimer)clearTimeout(deadlineTimer)});
     const largeOutput=result.output!==null && Buffer.byteLength(result.output)>65536;
     let output=result.output;
@@ -122,6 +126,7 @@ export async function executeRole(records:Records, config:Configuration, executi
       try {records.finishAttempt(attempt,'unknown',{...facts,report:{name:'report.txt',missing:true,complete:false},reportPersistenceError:'Required model report could not be saved'});}catch(saveError){records.markUnresolved(attempt,saveError);}return;
     }
     await toolServer?.close();
+    if(tools?.unresolved()){records.finishAttempt(attempt,'unknown',{...facts,stopConfirmation:undefined,error:'Tool execution still active or result unknown; agent exit does not prove tool stop',logs:{complete:false}});return;}
     if(toolObservationError){try{records.finishAttempt(attempt,'unknown',{...facts,toolObservationError});}catch(saveError){records.markUnresolved(attempt,saveError);}return;}
     if(deadlineError){records.updateAttempt(attempt,{...facts,runState:'unknown',persistenceError:deadlineError instanceof Error?deadlineError.message:'Deadline intent save failed'});return;}
     if(result.exitCode===null){records.finishAttempt(attempt,'unknown',{...facts,error:result.error ?? 'Agent exit evidence unavailable'});return;}
@@ -146,5 +151,5 @@ export async function executeRole(records:Records, config:Configuration, executi
     if(deadlineError){records.markUnresolved(attempt,deadlineError);return;}
     try{records.finishAttempt(attempt,launched?'unknown':'start_failed',{...lifecycleFacts,error:error instanceof Error?error.message:'Role launch failed',...(toolObservationError?{toolObservationError}:{})})}catch(saveError){records.markUnresolved(attempt,saveError)}
   }
-  finally{try{await toolServer?.close();}finally{if(deadlineTimer)clearTimeout(deadlineTimer);records.endLive(attempt)}}
+  finally{try{await tools?.close();await toolServer?.close();}finally{if(deadlineTimer)clearTimeout(deadlineTimer);records.endLive(attempt)}}
 }

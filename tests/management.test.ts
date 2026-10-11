@@ -87,6 +87,52 @@ afterEach(async () => {
   await Promise.all(directories.splice(0).map(dir => rm(dir, { recursive: true, force: true })));
 });
 
+test('legacy description-only tools still allow serve, role submission and show without MCP', async () => {
+  const f = await fixture();
+  await writeFile(f.config, `export default {
+    version:'legacy-tools', repos:[{id:'alpha',location:'/test/alpha'}], environments:[{id:'test'}], capabilities:[],
+    tools:[{id:'notes',description:''},{id:'notes',description:'second description'},{id:'',description:''}],
+    roles:[{id:'report',description:'report',validate(input){return input},buildPrompt(){return 'report'},skills:[],tools:['notes',''],validateReport(output){return output}}]
+  };`);
+  await start(f);
+  const submitted = await cli(['submit', '--socket', f.socket, '--repo', 'alpha', '--capability', 'report', '--input', 'null', '--source', 'manual']);
+  expect(submitted.code, submitted.stderr).toBe(0);
+  const receipt = JSON.parse(submitted.stdout);
+  expect(receipt.accepted).toBe(true);
+  const detail = await socketCall(f.socket, { command: 'show', id: receipt.requestId });
+  expect(detail).toMatchObject({ status: 200, body: { request: { capability: 'report', input: null }, execution: { status: 'queued' } } });
+});
+
+test.each(['null', '{}', 'false', '42', "'unused'", '[null, false, 42, {}, {id:42}, {id:""}]'])('unused legacy tools shape %s does not block serve', async tools => {
+  const f = await fixture();
+  await writeFile(f.config, `export default {
+    version:'legacy-shape', repos:[{id:'alpha',location:'/test/alpha'}], environments:[], capabilities:[], tools:${tools}
+  };`);
+  await start(f);
+  expect(await socketCall(f.socket, { command: 'list' })).toEqual({ status: 200, body: [] });
+});
+
+test.each([
+  { name: 'empty description', tools: "[{id:'run_tests',description:'',capability:'test-commit',inputSchema:z.object({})}]" },
+  { name: 'duplicate executable IDs', tools: "[{id:'run_tests',description:'run',capability:'test-commit',inputSchema:z.object({})},{id:'run_tests',description:'run again',capability:'test-commit',inputSchema:z.object({})}]" },
+  { name: 'description first collision', tools: "[{id:'run_tests',description:'legacy'},{id:'run_tests',description:'run',capability:'test-commit',inputSchema:z.object({})}]" },
+  { name: 'executable first collision', tools: "[{id:'run_tests',description:'run',capability:'test-commit',inputSchema:z.object({})},{id:'run_tests',description:'legacy'}]" },
+  { name: 'empty executable ID', tools: "[{id:'',description:'run',capability:'test-commit',inputSchema:z.object({})}]" },
+  { name: 'invalid MCP ID', tools: "[{id:'run-tests',description:'run',capability:'test-commit',inputSchema:z.object({})}]" },
+])('serve still rejects executable tools with $name', async ({ tools }) => {
+  const f = await fixture();
+  await writeFile(f.config, `import {z} from '${root}/node_modules/zod/index.js'; export default {
+    version:'executable-tools', repos:[{id:'alpha',location:'/test/alpha'}], environments:[{id:'test',docker:{image:'controlled:image'}}],
+    capabilities:[{id:'test-commit',environment:'test',validate(){},run(){},execution:{workspace:'readonly',commit(){return 'a'.repeat(40)}}}],
+    tools:${tools}
+  };`);
+  const result = await cli(['serve', '--data', f.dir, '--config', f.config]);
+  expect(result.code, result.stderr).toBe(1);
+  expect(JSON.parse(result.stderr.trim())).toMatchObject({event:'service_failure',error:'Control service failed'});
+  const {loadConfiguration} = await import('../src/config.js');
+  await expect(loadConfiguration(f.config)).rejects.toThrow(/Invalid or duplicate tool|Invalid executable tool binding/);
+});
+
 test('service startup failures produce safe timestamped service logs without configuration secrets', async () => {
   const f = await fixture();
   await writeFile(f.config, `throw new Error('Authorization: Bearer startup-secret password=private');`);

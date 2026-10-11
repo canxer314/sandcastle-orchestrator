@@ -159,6 +159,122 @@ test('context snapshot symlinks never delete tool resources',async()=>{
  expect(await cli(f.socket,['cleanup'])).toMatchObject({attempts:[{status:'failed'}]});expect(await readFile(join(outside,'session'),'utf8')).toBe('tool session');
 });
 
+test('CLI cleanup removes owned tool evidence while retaining call audit and tool resources',async()=>{
+ const f=await fixture();const tool={id:'1',tool:'check',runState:'completed',logs:{complete:true},artifacts:[{name:'report.txt'}],business:{ok:true},externalReferences:['https://example.invalid/tool/1']};
+ await historical(f,'completed',{toolCalls:[tool]});const directory=join(f.directory,'tools','1');await mkdir(join(directory,'artifacts'),{recursive:true});
+ for(const name of ['stdout.log','stderr.log','result.json','artifacts/report.txt','artifacts/private.txt'])await writeFile(join(directory,name),name);
+ await start(f);
+ expect(await cli(f.socket,['logs','execution','--call','1'])).toMatchObject({callId:'1',availability:'available',stdout:'stdout.log',stderr:'stderr.log',complete:true});
+ expect(await cli(f.socket,['artifact','execution','--call','1','--name','report.txt'])).toMatchObject({callId:'1',availability:'available',content:Buffer.from('artifacts/report.txt').toString('base64')});
+ expect(await cli(f.socket,['cleanup'])).toMatchObject({attempts:[{status:'cleaned'}]});
+ for(const name of ['stdout.log','stderr.log','result.json','artifacts/report.txt'])await expect(readFile(join(directory,name))).rejects.toMatchObject({code:'ENOENT'});
+ expect(await readFile(join(directory,'artifacts/private.txt'),'utf8')).toBe('artifacts/private.txt');
+ expect(await cli(f.socket,['show','execution'])).toMatchObject({attempts:[{toolCalls:[{...tool,logs:{complete:false},cleanup:{status:'cleaned'}}]}]});
+ expect(await cli(f.socket,['logs','execution','--call','1'])).toMatchObject({callId:'1',availability:'cleaned',complete:false});
+ expect(await cli(f.socket,['artifact','execution','--call','1','--name','report.txt'])).toMatchObject({callId:'1',availability:'cleaned',content:null});
+});
+
+test.each(['running','unknown','attention','unconfirmed'])('CLI cleanup retains whole execution with %s tool evidence',async(state)=>{
+ const f=await fixture();await historical(f,'completed',{toolCalls:[{id:'1',runState:state==='running'||state==='unknown'?state:'completed',...(state==='attention'?{requiresAttention:true}:{}),...(state==='unconfirmed'?{cancellation:{reason:'stop'}}:{})}]});
+ const directory=join(f.directory,'tools','1');await mkdir(directory,{recursive:true});await writeFile(join(directory,'stdout.log'),'tool evidence');await start(f);
+ expect(await cli(f.socket,['cleanup'])).toEqual({attempts:[]});
+ expect(await readFile(join(directory,'stdout.log'),'utf8')).toBe('tool evidence');expect(await readFile(join(f.directory,'stdout.log'),'utf8')).toBe('stdout.log');
+});
+
+test('CLI cleanup completes tool deletion left behind by an older cleaned record',async()=>{
+ const f=await fixture();await historical(f,'completed',{cleanup:{status:'cleaned'},toolCalls:[{id:'1',runState:'completed',logs:{complete:true}}]});
+ const directory=join(f.directory,'tools','1');await mkdir(directory,{recursive:true});await writeFile(join(directory,'stdout.log'),'old tool evidence');await start(f);
+ expect(await cli(f.socket,['cleanup'])).toMatchObject({attempts:[{status:'cleaned'}]});await expect(readFile(join(directory,'stdout.log'))).rejects.toMatchObject({code:'ENOENT'});
+});
+
+test.each(['tools','1','artifacts','stdout.log','result.json','report.txt'])('tool cleanup rejects symlinked %s without deleting provider resources',async(level)=>{
+ const f=await fixture();await historical(f,'completed',{toolCalls:[{id:'1',runState:'completed',artifacts:[{name:'report.txt'}]}]});
+ const directory=join(f.directory,'tools','1');await mkdir(join(directory,'artifacts'),{recursive:true});const outside=await temporary();const target=join(outside,'evidence');await writeFile(target,'provider evidence');
+ const path=level==='tools'?join(f.directory,'tools'):level==='1'?directory:level==='report.txt'?join(directory,'artifacts','report.txt'):join(directory,level);
+ await rm(path,{recursive:true,force:true});await symlink(['tools','1','artifacts'].includes(level)?outside:target,path);await start(f);
+ expect(await cli(f.socket,['cleanup'])).toMatchObject({attempts:[{status:'failed'}]});expect(await readFile(target,'utf8')).toBe('provider evidence');
+ expect(await cli(f.socket,['logs','execution','--call','1'])).toMatchObject({availability:'failed',complete:false});
+});
+
+test('tool evidence queries reject symlinked parent directories',async()=>{
+ const f=await fixture();await historical(f,'completed',{toolCalls:[{id:'1',runState:'completed',logs:{complete:true}}]});const outside=await temporary();await writeFile(join(outside,'stdout.log'),'provider secret');await writeFile(join(outside,'stderr.log'),'provider secret');await mkdir(join(f.directory,'tools'));await symlink(outside,join(f.directory,'tools','1'));await start(f);
+ await expect(call(f.socket,{command:'logs',id:'execution',call:'1'})).rejects.toThrow('physical directory');
+});
+
+test('parent stop confirmation alone cannot resolve an unknown MCP tool result',async()=>{
+ const f=await fixture();await historical(f,'unknown',{toolCalls:[{id:'1',runState:'unknown',error:'execution result unavailable'}]});await start(f);
+ await cli(f.socket,['confirm-stop','execution','--source','operator','--handling','inspect parent','--reason','parent stopped']);
+ await expect(call(f.socket,{command:'resolve',id:'execution',source:'operator',handling:'inspect',reason:'retire',externalResults:'parent checked'})).rejects.toThrow('Tool stop and external results not confirmed');
+ expect(await cli(f.socket,['cleanup'])).toEqual({attempts:[]});
+});
+
+test('explicit CLI tool confirmation preserves unknown facts and enables reconciliation and aged cleanup',async()=>{
+ const f=await fixture();await historical(f,'unknown',{toolCalls:[{id:'1',runState:'unknown',error:'execution result unavailable',requiresAttention:true,logs:{complete:false}}]});await start(f);
+ await call(f.socket,{command:'confirm-stop',id:'execution',source:'operator',handling:'inspect parent',reason:'parent stopped'});
+ const confirmed=await cli(f.socket,['confirm-stop','execution','--call','1','--source','operator','--handling','inspect tool container and external target','--reason','tool stopped','--external-results','external test results reviewed']);
+ expect(confirmed.attempts[0].toolCalls[0]).toMatchObject({runState:'unknown',error:'execution result unavailable',stopConfirmation:{kind:'manual',externalResults:'external test results reviewed'}});
+ await call(f.socket,{command:'resolve',id:'execution',source:'operator',handling:'reconciled',reason:'retire',externalResults:'no remaining external work'});
+ const service=children.at(-1)!;const exit=once(service,'exit');service.kill('SIGTERM');await exit;
+ await writeFile(f.launcher,(await readFile(f.launcher,'utf8')).replaceAll('2026-01-31T00:00:00Z','2026-03-02T00:00:00Z'));await start(f);
+ expect(await call(f.socket,{command:'cleanup'})).toMatchObject({attempts:[{attemptId:'attempt',status:'cleaned'}]});
+ expect(await call(f.socket,{command:'show',id:'execution'})).toMatchObject({attempts:[{toolCalls:[{runState:'unknown',error:'execution result unavailable',requiresAttention:true,reconciliation:{decision:'resolve'},cleanup:{status:'cleaned'}}]}]});
+});
+
+test('socket recovery can reconcile tools left unknown by a legacy resolved parent',async()=>{
+ const f=await fixture();await historical(f,'resolved',{stopConfirmation:{kind:'manual'},toolCalls:[{id:'1',runState:'unknown'}]});await start(f);
+ await call(f.socket,{command:'confirm-stop',id:'execution',call:'1',source:'operator',handling:'inspect tool',reason:'stopped',externalResults:'checked'});
+ expect(await call(f.socket,{command:'resolve',id:'execution',source:'operator',handling:'reconcile',reason:'retire',externalResults:'checked'})).toMatchObject({execution:{status:'resolved'},attempts:[{toolCalls:[{runState:'unknown',reconciliation:{decision:'resolve'}}]}]});
+});
+
+test('socket tool confirmations can reconcile legacy tool evidence in an older attempt',async()=>{
+ const f=await fixture();await historical(f,'resolved',{toolCalls:[{id:'1',runState:'unknown'}]});
+ const db=new DatabaseSync(join(f.data,'records.sqlite'));db.prepare('INSERT INTO attempts VALUES(?,?,?,?,?,?,?)').run('new-attempt','execution','v1','test','test','completed',JSON.stringify({endedAt:'2026-01-01T00:00:00Z',actualSha:'sha'}));db.prepare('UPDATE executions SET status=?').run('completed');db.close();await start(f);
+ expect(await call(f.socket,{command:'confirm-stop',id:'execution',attempt:'attempt',call:'1',source:'operator',handling:'inspect old tool',reason:'stopped',externalResults:'checked'})).toMatchObject({attempts:[{id:'attempt',toolCalls:[{stopConfirmation:{kind:'manual'}}]},{id:'new-attempt'}]});
+ expect(await call(f.socket,{command:'resolve',id:'execution',source:'operator',handling:'reconcile',reason:'retire',externalResults:'checked'})).toMatchObject({execution:{status:'resolved'},attempts:[{toolCalls:[{runState:'unknown',reconciliation:{decision:'resolve'}}]},{id:'new-attempt'}]});
+});
+
+test('socket rejects incomplete tool confirmation and failed persistence without granting recovery',async()=>{
+ const f=await fixture();await historical(f,'unknown',{stopConfirmation:{kind:'manual'},toolCalls:[{id:'1',runState:'unknown'}]});
+ const db=new DatabaseSync(join(f.data,'records.sqlite'));db.exec("CREATE TRIGGER reject_tool_confirmation BEFORE UPDATE ON attempts BEGIN SELECT RAISE(FAIL,'confirmation save failed'); END;");db.close();await start(f);
+ const audit={command:'confirm-stop',id:'execution',source:'operator',handling:'inspect',reason:'stopped'};
+ for(const invalid of [null,0,'../1','0'])await expect(call(f.socket,{...audit,call:invalid,externalResults:'checked'})).rejects.toThrow('Invalid tool call identifier');
+ await expect(call(f.socket,{...audit,call:'2',externalResults:'checked'})).rejects.toThrow('Tool call not found');
+ await expect(call(f.socket,{...audit,call:'1'})).rejects.toThrow('Missing externalResults');
+ await expect(call(f.socket,{...audit,call:'1',externalResults:'checked'})).rejects.toThrow('confirmation save failed');
+ const detail=await cli(f.socket,['show','execution']);expect(detail.attempts[0].toolCalls[0].stopConfirmation).toBeUndefined();
+ await expect(call(f.socket,{command:'resolve',id:'execution',source:'operator',handling:'inspect',reason:'retire',externalResults:'checked'})).rejects.toThrow('Tool stop and external results not confirmed');
+ expect(await cli(f.socket,['cleanup'])).toEqual({attempts:[]});
+});
+
+test('socket retry refuses overlap with tools not individually confirmed',async()=>{
+ const f=await fixture();await historical(f,'unknown',{stopConfirmation:{kind:'manual'},toolCalls:[{id:'1',runState:'unknown'}]});
+ const configPath=join(f.launcher,'..','config.ts');await writeFile(configPath,`export default {version:'v1',repos:[{id:'alpha',location:'/test/alpha'}],environments:[{id:'test',docker:{image:'local-test'}}],capabilities:[{id:'test',environment:'test',validate(){},execution:{commit(){return 'a'.repeat(40)}},async run(){throw Error('must not run')}}]}`);await start(f);
+ await expect(call(f.socket,{command:'retry',id:'execution',source:'operator',handling:'inspect parent',reason:'retry',externalResults:'parent checked'})).rejects.toThrow('Tool stop and external results not confirmed');
+ expect((await cli(f.socket,['show','execution'])).attempts).toHaveLength(1);
+});
+
+test('manual tool stop confirmation without reconciliation still protects cancelled tool evidence',async()=>{
+ const f=await fixture();await historical(f,'completed',{toolCalls:[{id:'1',runState:'completed',cancellation:{reason:'stop'}}]});await start(f);
+ await call(f.socket,{command:'confirm-stop',id:'execution',call:'1',source:'operator',handling:'inspect tool',reason:'stopped',externalResults:'checked'});
+ expect(await cli(f.socket,['cleanup'])).toEqual({attempts:[]});
+ await call(f.socket,{command:'resolve',id:'execution',source:'operator',handling:'reconcile',reason:'retire',externalResults:'checked'});
+ expect(await cli(f.socket,['show','execution'])).toMatchObject({attempts:[{toolCalls:[{runState:'completed',reconciliation:{decision:'resolve'}}]}]});
+});
+
+test('renewed tool confirmation invalidates earlier reconciliation until a fresh resolve starts retention',async()=>{
+ const f=await fixture();await historical(f,'resolved',{stopConfirmation:{kind:'manual'},toolCalls:[{id:'1',runState:'unknown',stopConfirmation:{kind:'manual',externalResults:'old check'},reconciliation:{decision:'resolve',recordedAt:'2026-01-01T00:00:00Z'}}]});
+ const db=new DatabaseSync(join(f.data,'records.sqlite'));db.exec('CREATE TABLE execution_management(execution_id TEXT PRIMARY KEY,facts TEXT NOT NULL)');db.prepare('INSERT INTO execution_management VALUES (?,?)').run('execution',JSON.stringify({reconciliation:{decision:'resolve',recordedAt:'2026-01-01T00:00:00Z'}}));db.close();await start(f);
+ const audit={source:'operator',handling:'checked again',reason:'fresh review',externalResults:'new external facts checked'};
+ const confirmed=await call(f.socket,{command:'confirm-stop',id:'execution',call:'1',...audit}) as any;
+ expect(confirmed.attempts[0].toolCalls[0].reconciliation).toBeUndefined();
+ expect(await cli(f.socket,['cleanup'])).toEqual({attempts:[]});
+ expect(await call(f.socket,{command:'resolve',id:'execution',...audit})).toMatchObject({execution:{status:'resolved',reconciliation:{recordedAt:'2026-01-31T00:00:00.000Z'}},attempts:[{toolCalls:[{runState:'unknown',reconciliation:{recordedAt:'2026-01-31T00:00:00.000Z'}}]}]});
+ expect(await cli(f.socket,['cleanup'])).toEqual({attempts:[]});
+ const service=children.at(-1)!;const exit=once(service,'exit');service.kill('SIGTERM');await exit;
+ await writeFile(f.launcher,(await readFile(f.launcher,'utf8')).replaceAll('2026-01-31T00:00:00Z','2026-03-02T00:00:00Z'));await start(f);
+ expect(await cli(f.socket,['cleanup'])).toMatchObject({attempts:[{attemptId:'attempt',status:'cleaned'}]});
+});
+
 test('unknown cleanup never leaves historical logs marked complete',async()=>{
  const f=await fixture();await historical(f,'completed',{cleanup:{status:'unknown'}});await start(f);
  expect(await cli(f.socket,['show','execution'])).toMatchObject({attempts:[{logs:{complete:false}}]});

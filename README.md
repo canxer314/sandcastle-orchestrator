@@ -139,6 +139,32 @@ pnpm start artifact EXECUTION_ID --name report.txt --offset 0 --socket /srv/orch
 
 受控 CLI/socket 与实际工具入口测试覆盖授权范围、故障/证据不足、来源变化保留旧事实、观察保存失败和 9 MiB 报告完整读取。**本任务未授权或执行真实模型、容器、远端写入；#25 的真实端到端业务质量与 Docker socket/模型环境验收仍待明确授权，不能借用 #19 验收声称通过。**
 
+## 当前尝试 MCP 测试工具（#22）
+
+使用官方 stable `@modelcontextprotocol/server/client` 2.3.1 与 Zod 4.6.5。只为显式 opt-in 的 Claude Code provider 注入 `--strict-mcp-config --mcp-config /orchestrator-mcp/config.json`；Sandcastle 没有原生 MCP 配置字段，通过公开 `buildPrintCommand` 保留原 stdin/parser/session 契约。其他 provider 的 MCP 未支持，不冒充兼容。旧 provider、描述型 tools、配置、CLI/socket 协议与历史记录保持不变。描述型 tools 仍允许空 description、空 ID 与重复 ID，角色说明仍取首个匹配项；仅可执行 tools 要求非空 description、合法 MCP ID，且 ID 不可与任何其他工具重名。
+
+```ts
+import { z } from 'zod';
+// test-commit 的 execution 增加 workspace: 'readonly'，保留 commit selector。
+// 例如 execution: { workspace: 'readonly', commit(input) { return FIXED_SHA; } }。
+// 添加到既有配置；角色 tools 引用 run_tests。
+providers: [{ id: 'claude', agent: claudeCodeAgent, mcp: 'claude-code' }],
+tools: [{
+  id: 'run_tests', description: '运行固定版本测试，scope 只接受 smoke/full；返回业务结果、运行故障及读取引用。',
+  capability: 'test-commit', inputSchema: z.object({ scope: z.enum(['smoke', 'full']) }).strict(),
+}],
+```
+
+MCP 只能绑定显式声明 `capability.execution.workspace: 'readonly'` 的能力；独立入口对这些能力也 readonly，机械保持同一执行限制。旧能力默认 rw 不变，不声明 readonly 则不能暴露为当前只读角色的工具。业务脚本只能写 `/artifacts` 或 `/tmp`。每个工具显式绑定已具备独立入口的 `capability`，参数经 strict Zod schema 和原 `capability.validate` 校验；与独立入口一致，校验器返回值或原地修改不改变执行输入（包括嵌套参数）。不推断脚本契约。管理员声明业务参数与实际限制，不把身份或凭据作为工具参数。repo、SHA、attempt、当前 Sandcastle host worktree 与能力环境由宿主可信设施绑定；不调用工具能力的 SHA selector，不建立新的请求、尝试或并发占用。工具直接复用原 `capability.run(context)` 和真实 Docker `context.exec`/inspect 语义；独立 CLI 入口仍有自己的尝试与目录。
+
+角色镜像只需可执行的 Node.js，无需安装 MCP SDK。容器内 `node /orchestrator-mcp/bridge.cjs` 仅将 stdio 字节转发到专属 `tools.sock`；官方 SDK、业务函数与 Docker client 留在宿主。只挂载此 attempt 的受限目录，角色 root/repo/MCP 挂载 readonly、无 Docker socket 和 management socket。代码使用当前 attempt worktree **readonly**，不是另行导出 snapshot；测试只能写 `/artifacts` 与 `/tmp`，需要原地 build/install 的能力不适合这个只读角色。工具使用能力绑定的无网络测试镜像，不继承角色模型认证环境，管理员仍须保证镜像可信与能力输入校验不接受凭据。
+
+普通调用直接等待，逐次执行；同时到达的调用拒绝，不排队。没有自动重试、kill、统一 job 或取消工具。脚本非零返回由原能力解释为业务失败；启动/契约故障与 unknown 分开。断连或模型结束不证明工具停止：已启动工作继续，unknown 后拒绝再启动，parent attempt 不因 Agent exit marker 虚报停止；人工恢复必须核查记录中的所有工具容器。
+
+`show` 在当前 attempt 的 optional `toolCalls` 保存能力、环境、SHA、call ID、容器状态、结果与日志；每次调用只新增 `tools/CALL_ID` 日志/产物目录。MCP 返回至多 16 KiB 的 JSON 摘要，超过时明确 `summaryTruncated: true`，保留 bounded `businessPreview`/关键错误/产物预览（预览是文本，不要求统一业务 schema），完整结果是 `result.json`。`read_tool_file({callId,name,offset,kind?})` 提供 stdout.log、stderr.log、result.json 和已注册产物，base64 分块每次最多 64 KiB，以 `nextOffset` 续读，`truncated` 表示还有内容。读取与日志／结果同名的已登记产物时传 `kind: 'artifact'`；省略 kind 保留原行为（保留名称读取日志／结果，其他名称读取已登记产物）。显式 artifact 仍要求产物已登记。拒绝跨调用路径、文件或证据父目录的 symlink 与非普通文件，不把宿主路径当读取入口。日志保留完整原始流，不做秘密过滤。服务退出不自动重连工具，旧记录仍用于人工核查。
+
+受控测试从 CLI/socket 建立角色尝试，通过真实 MCP stdio 与官方 client 验证成功、业务失败、启动故障、unknown、畸形参数、身份/路径拒绝及大日志读取；真实模型/镜像的验收另行授权执行，受控 Docker 替身不算真实执行验收。
+
 ## 取消与人工恢复
 
 重启不消费历史 queued 请求，也不重跑、重连或接管旧 starting/running 尝试。`show` 的 `location` 如实返回容器名；harness process identity 和 reconnect handle 不可得时为 `null`，不能据此声称已停止。
@@ -153,7 +179,11 @@ pnpm start retry EXECUTION_ID --socket /srv/orchestrator-data/control.sock \
   --source operator --handling '已核对，允许再次执行' --reason '重新执行' --external-results '相关外部结果及核对证据'
 ```
 
-socket 对应命令为 `cancel/confirm-stop/resolve/retry`，使用 `id`、`reason`，人工操作还需 `source/handling`，resolve/retry 还需 `externalResults`；全部输出 JSON。`--attempt` 只能指定当前尝试，日志/产物仍可选择历史尝试。
+socket 对应命令为 `cancel/confirm-stop/resolve/retry`，使用 `id`、`reason`，人工操作还需 `source/handling`，resolve/retry 还需 `externalResults`；全部输出 JSON。`--attempt` 通常只能指定当前尝试；工具停止确认和日志/产物可选择历史尝试。
+
+不传 `--call` 的 confirm-stop **只确认 parent attempt**，不会推断或追溯确认工具停止。对每个仍未决、需核查或停止未确认的 `toolCalls`，先实际核查工具容器及外部结果，再运行 `confirm-stop EXECUTION_ID --call CALL_ID --source operator --handling '工具停止核查方式' --reason '停止依据' --external-results '外部结果核对证据'`（同样传 `--socket`；历史工具加 `--attempt ATTEMPT_ID`）。socket 使用可选字符串 `call`、`attempt` 和必填 `externalResults`。确认不停止工具，也不重写其原 `runState/error/requiresAttention/persistenceError`；只增量保存工具 `stopConfirmation.kind: manual` 审计。任何入口仍 live 时拒绝人工确认。
+
+所有待核对工具分别确认后，resolve/retry 才能事务保存工具 `reconciliation` 并结束未决或创建替代尝试；父退出或父人工确认均不能绕过。旧程序留下的 resolved/completed parent 与 unknown 工具也可先明确确认工具，再 resolve。确认后但尚未 resolve/retry 时仍保护证据。
 
 取消首先事务保存意图；无尝试的 queued 直接 cancelled。运行尝试后台调用 `docker stop --timeout -1`，只协作停止，不使用默认超时后的 SIGKILL，不强杀 harness/client。管理回执只证明取消意图已保存。协作停止可能无限等待，状态保持 unknown；stop 失败、无可用容器身份或 inspect 不可得也不宣称停止。只有 inspect 确认非运行且本实例 capability 入口已结束，才能保存 cancelled + `stopConfirmation.kind: docker-inspect`。已退出的前一容器不证明宿主入口结束；入口仍 live 时保持 unknown，人工 confirm-stop/resolve/retry 也不能绕过。stop 失败后，原命令正常退出的可信 inspect 加入口结束仍可完成取消。完整 completed 不被后来的取消覆盖，取消不回滚外部写入。
 
@@ -223,11 +253,11 @@ pnpm start cleanup --socket /srv/orchestrator-data/control.sock
 
 socket 请求为 `{"command":"cleanup"}`，返回 `attempts` 中本次处理或已清理的尝试及 `status`，文件失败带 `reason`。只有整个执行已结束满 30 天、全部尝试已结束且无活跃入口、未决、停止未确认或待核对证据才清理。人工 resolve 从核对结束的记录时间起计时；旧记录缺少可信结束时间则保留，不猜测。重试排队或运行时保留该执行全部历史证据。明确启动失败且已结束的 `start_failed` 尝试，事后 cancel 仅保留取消审计，不额外要求停止确认，也不阻挡已结束重试执行的到期清理；真正取消但停止未确认的尝试仍保留。
 
-只 unlink `DATA/attempts/ID/stdout.log`、`stderr.log` 及已登记的单层普通产物文件；另清理 role 的 `context` 校验快照（仅编排器写入、从不挂载或交给 provider）。不删除整个尝试目录，不处理未登记文件、确定性能力可写 workspace、工具日志、provider session/worktree、容器或远端对象。可写 workspace 和未登记产物可能包含工具自有资源，归属无法确认时保守保留，管理员核对后另行处理。拒绝符号链接与非普通目标；没有 provider 自动清理承诺。`cleaned` 仅表示上述已确认自有可弃内容已清理，不表示本地空间全部释放。同步本地删除与单写者状态操作串行，清理不停止或强杀执行。
+只 unlink `DATA/attempts/ID/stdout.log`、`stderr.log` 及已登记的单层普通产物文件，同时清理已登记 `toolCalls` 对应的 `tools/CALL_ID/stdout.log`、`stderr.log`、`result.json` 与已登记产物；工具调用活跃、未决、需核查或停止未确认时保留整个执行证据；原 unknown 等事实仅在工具已明确人工确认停止、核对外部结果且 resolve/retry 已保存 reconciliation 后不再阻挡清理，执行核对结束后仍保留满 30 天。另清理 role 的 `context` 校验快照（仅编排器写入、从不挂载或交给 provider）。不删除整个尝试目录，不处理未登记文件、确定性能力可写 workspace、工具自有未登记文件、provider session/worktree、容器或远端对象。可写 workspace 和未登记产物可能包含工具自有资源，归属无法确认时保守保留，管理员核对后另行处理。拒绝符号链接与非普通目标；没有 provider 自动清理承诺。`cleaned` 仅表示上述已确认自有可弃内容已清理，不表示本地空间全部释放。同步本地删除与单写者状态操作串行，清理不停止或强杀执行。
 
-请求、执行、尝试、业务摘要、恢复说明及外部/session 引用保留；attempt 新增 `cleanup.status`（`cleaned`、`failed`、`unknown`）和时间/失败原因。删除前必要保存 unknown，完成后才记 cleaned；崩溃或结束保存失败保持 unknown，文件失败记 failed，重复调用可安全重试。CLI `logs/artifact` 保留原字段并增加 `availability`；已清理、清理失败或未知返回对应状态、空内容，日志 `complete:false`；没有清理记录但文件丢失返回 `unavailable`。产物仍必须已登记。`show/list` 不再将清理过的日志标为完整。
+请求、执行、尝试、业务摘要、恢复说明及外部/session 引用保留；attempt 新增 `cleanup.status`（`cleaned`、`failed`、`unknown`）和时间/失败原因。删除前必要保存 unknown，完成后才记 cleaned；崩溃或结束保存失败保持 unknown，文件失败记 failed，重复调用可安全重试。CLI `logs/artifact` 保留原字段并增加 `availability`；已清理、清理失败或未知返回对应状态、空内容，日志 `complete:false`；没有清理记录但文件丢失返回 `unavailable`。产物仍必须已登记。`show/list` 不再将清理过的尝试或工具调用日志标为完整；保留轻量 `toolCalls` 审计与外部引用。`logs/artifact --call CALL_ID`（socket 可选 `call` 字符串）查询该尝试的工具日志/已登记产物，返回同样的可用状态并附 `callId`；不传 `--call` 的旧查询协议不变。旧程序已标记 cleaned 但未清理工具文件的记录可重复 cleanup 补齐。
 
-无需表结构迁移，只增量扩展 JSON facts，旧记录及管理命令继续可用。升级前备份完整 DATA；删除不可通过数据库回退撤销。旧程序不理解 cleanup 状态，降级后不应继续提供证据查询；需要完整恢复时停止服务、核对外部事实并恢复清理前完整备份。
+无需表结构迁移，只增量扩展 JSON facts，旧记录及管理命令继续可用。旧 parent stopConfirmation 不迁移为工具确认；升级后须逐个补录工具停止与外部结果核对，旧 unknown 工具未明确处理前保持保护。旧版本不理解工具 stopConfirmation/reconciliation，降级不得继续恢复、retry 或 cleanup；使用既有停止、完整备份与人工核对回退流程。升级前备份完整 DATA；删除不可通过数据库回退撤销。旧程序不理解 cleanup 状态，降级后不应继续提供证据查询；需要完整恢复时停止服务、核对外部事实并恢复清理前完整备份。
 
 ## 验证
 
@@ -237,6 +267,6 @@ pnpm run typecheck
 pnpm audit
 ```
 
-管理测试经真实 CLI/socket 启动控制服务，用临时 SQLite 和文件系统验证提交、拒绝、查询、事务失败、服务独占、崩溃恢复和文件权限。`tests/execution.test.ts` 的真实 Docker 用例默认 skip，仅在已获授权主机显式 `ORCHESTRATOR_REAL_DOCKER=1 pnpm test` 才执行。它们使用临时 Git repo 和本地 `node:22.22-alpine` 镜像执行真实无网络 Docker 脚本，验证固定 SHA、独立目录、非零业务结果、日志/产物与隔离限制；需要管理员授权的测试主机和预部署镜像，缺镜像/daemon 时测试失败，不下载或绕过。SQLite trigger 故障注入验证启动前与结束保存失败，受控 Docker CLI 替身验证 client 退出但容器仍运行或 inspect 不可得的未知结束窗口，Git adapter 替身验证明确禁用 lazy fetch。未运行真实业务项目、模型、MCP 或外部写入，未验证任意镜像安全和内核级隔离。
+管理测试经真实 CLI/socket 启动控制服务，用临时 SQLite 和文件系统验证提交、拒绝、查询、事务失败、服务独占、崩溃恢复和文件权限。`tests/execution.test.ts` 的真实 Docker 用例默认 skip，仅在已获授权主机显式 `ORCHESTRATOR_REAL_DOCKER=1 pnpm test` 才执行。它们使用临时 Git repo 和本地 `node:22.22-alpine` 镜像执行真实无网络 Docker 脚本，验证固定 SHA、独立目录、非零业务结果、日志/产物与隔离限制；需要管理员授权的测试主机和预部署镜像，缺镜像/daemon 时测试失败，不下载或绕过。SQLite trigger 故障注入验证启动前与结束保存失败，受控 Docker CLI 替身验证 client 退出但容器仍运行或 inspect 不可得的未知结束窗口，Git adapter 替身验证明确禁用 lazy fetch。常规 suite 不运行真实业务项目、模型、Docker 或外部写入；受控 MCP 测试使用真实 stdio 协议但不调用模型。授权真实 provider 验收见 [#19](docs/issue-19-real-acceptance.md) 与 [#22](docs/issue-22-real-acceptance.md)，不代表任意镜像安全或内核级隔离已验证。
 
 后续实现沿用这一管理入口，按 #19–#29 增加能力与验收。本版本没有自动恢复、Agent 调度或备份管理，不应按完整生产规格部署。

@@ -107,7 +107,7 @@ export class Records {
       const facts = JSON.parse(String(a.facts));
       return {
         id: a.id, configVersion: a.config_version, capability: a.capability, environment: a.environment,
-        ...facts, ...(facts.cleanup ? {logs:{...facts.logs,complete:false}} : {}), runState: unknown ? 'unknown' : a.run_state,
+        ...facts, ...(facts.cleanup ? {logs:{...facts.logs,complete:false},...(facts.toolCalls ? {toolCalls:facts.toolCalls.map((call:Record<string,any>)=>({...call,logs:{...call.logs,complete:false}}))} : {})} : {}), runState: unknown ? 'unknown' : a.run_state,
         ...(unknown ? { persistedRunState: a.run_state, requiresAttention: true } : {}),
         location: {container:JSON.parse(String(a.facts)).container ?? null, processIdentity:null, reconnectHandle:null, limitation:'No harness process identity or reconnect handle; container name is evidence, not proof of stopping'},
         ...(this.unresolved.has(String(a.id)) ? { persistenceError: this.unresolved.get(String(a.id)) } : {}),
@@ -155,9 +155,34 @@ export class Records {
     return this.show(id);
   }
 
-  confirmStop(id: string, audit: Record<string, unknown>) {
-    const detail = this.show(id); const attempt = detail.attempts.at(-1);
+  private toolNeedsReview(call: Record<string, any>) {
+    return !['completed','cancelled','resolved','start_failed'].includes(call.runState) || call.requiresAttention || call.persistenceError
+      || (call.cancellation && (!call.stopConfirmation || call.stopConfirmation.kind === 'manual') && call.runState !== 'start_failed');
+  }
+
+  private toolConfirmed(call: Record<string, any>) {
+    return call.stopConfirmation?.kind === 'manual' && typeof call.stopConfirmation.externalResults === 'string' && !!call.stopConfirmation.externalResults.trim();
+  }
+
+  private toolReconciled(call: Record<string, any>) {
+    return this.toolConfirmed(call) && typeof call.reconciliation?.recordedAt === 'string'
+      && Number.isFinite(Date.parse(call.reconciliation.recordedAt)) && ['resolve','retry'].includes(call.reconciliation.decision);
+  }
+
+  confirmStop(id: string, audit: Record<string, unknown>, callId?: string, attemptId?: string) {
+    const detail = this.show(id); const attempt = callId !== undefined && attemptId !== undefined ? detail.attempts.find(a => a.id === attemptId) : detail.attempts.at(-1);
+    if (callId !== undefined && detail.attempts.some(a => this.isLive(String(a.id)))) throw Error('Attempt entrypoint is still live');
     if (attempt && this.isLive(String(attempt.id))) throw Error('Attempt entrypoint is still live');
+    if (callId !== undefined) {
+      if (typeof callId !== 'string' || !/^[1-9][0-9]*$/.test(callId)) throw Error('Invalid tool call identifier');
+      const call = attempt?.toolCalls?.find((c: Record<string, any>) => c.id === callId);
+      if (!call) throw Error('Tool call not found');
+      for (const field of ['source','handling','reason','externalResults']) if (typeof audit[field] !== 'string' || !(audit[field] as string).trim()) throw Error(`Missing ${field}`);
+      const row = this.db.prepare('SELECT facts FROM attempts WHERE id = ?').get(String(attempt.id))!;
+      const facts = JSON.parse(String(row.facts));
+      this.db.prepare('UPDATE attempts SET facts = ? WHERE id = ?').run(JSON.stringify({...facts,toolCalls:facts.toolCalls.map((c: Record<string, any>) => c.id === callId ? {...c,reconciliation:undefined,stopConfirmation:{...audit,kind:'manual',confirmedAt:new Date().toISOString()}} : c)}),String(attempt.id));
+      return this.show(id);
+    }
     if (!attempt || attempt.runState !== 'unknown') throw Error('Only unknown attempts can be manually confirmed');
     this.updateAttempt(String(attempt.id), {stopConfirmation:{...audit, kind:'manual', confirmedAt:new Date().toISOString()}});
     return this.show(id);
@@ -169,7 +194,9 @@ export class Records {
     const attempt = detail.attempts.at(-1);
     if (detail.attempts.some(a=>this.isLive(String(a.id)))) throw Error('Attempt entrypoint is still live');
     if (detail.attempts.some(a => ['starting','running','unknown'].includes(a.runState) && !a.stopConfirmation)) throw Error('Stop not confirmed');
-    if (detail.execution.status === 'queued' || (!retry && detail.execution.status !== 'unknown')) throw Error('Execution is not unresolved or retryable');
+    if (detail.attempts.some(a => (a.toolCalls ?? []).some((call: Record<string, any>) => this.toolNeedsReview(call) && !this.toolConfirmed(call)))) throw Error('Tool stop and external results not confirmed');
+    const pendingTools = detail.attempts.some(a => (a.toolCalls ?? []).some((call: Record<string, any>) => this.toolNeedsReview(call) && !this.toolReconciled(call)));
+    if (detail.execution.status === 'queued' || (!retry && detail.execution.status !== 'unknown' && !pendingTools)) throw Error('Execution is not unresolved or retryable');
     for (const field of ['source','handling','reason','externalResults']) if(typeof audit[field] !== 'string' || !(audit[field] as string).trim()) throw Error(`Missing ${field}`);
     const reconciliation = {...audit, recordedAt:new Date().toISOString(), decision:retry?'retry':'resolve'};
     const actualSha = detail.attempts.find(a=>a.actualSha)?.actualSha ?? this.management(String(detail.execution.id)).fixedSha;
@@ -179,6 +206,12 @@ export class Records {
       if(attempt && attempt.runState === 'unknown') {
         const previous = this.db.prepare('SELECT facts FROM attempts WHERE id = ?').get(String(attempt.id))!;
         this.db.prepare('UPDATE attempts SET run_state = ?, facts = ? WHERE id = ?').run('resolved',JSON.stringify({...JSON.parse(String(previous.facts)),runState:'resolved',reconciliation}),String(attempt.id));
+      }
+      for (const historical of detail.attempts) {
+        if (!(historical.toolCalls ?? []).some((call: Record<string, any>) => this.toolNeedsReview(call))) continue;
+        const row = this.db.prepare('SELECT facts FROM attempts WHERE id = ?').get(String(historical.id))!;
+        const facts = JSON.parse(String(row.facts));
+        this.db.prepare('UPDATE attempts SET facts = ? WHERE id = ?').run(JSON.stringify({...facts,toolCalls:facts.toolCalls.map((call: Record<string, any>) => this.toolNeedsReview(call) ? {...call,reconciliation} : call)}),String(historical.id));
       }
       this.saveManagement(String(detail.execution.id), {cancellation:null, fixedSha:actualSha ?? this.management(String(detail.execution.id)).fixedSha, reconciliation});
       this.db.prepare('UPDATE executions SET status = ? WHERE id = ?').run(retry?'queued':'resolved',String(detail.execution.id));
@@ -192,6 +225,7 @@ export class Records {
     const detail = this.show(executionId);
     if(detail.execution?.status !== 'queued' || this.management(executionId).cancellation) throw Error('Execution cannot start');
     if(detail.attempts.some(a=>['starting','running','unknown'].includes(a.runState) && !a.stopConfirmation)) throw Error('Stop not confirmed');
+    if (detail.attempts.some(a => (a.toolCalls ?? []).some((call: Record<string, any>) => this.toolNeedsReview(call) && !this.toolReconciled(call)))) throw Error('Tool stop and external results not confirmed');
     const id = randomUUID();
     const createdAt = new Date().toISOString();
     const deadlineAt = typeof facts.attemptDeadlineSeconds === 'number' ? new Date(Date.parse(createdAt) + facts.attemptDeadlineSeconds * 1000).toISOString() : undefined;
@@ -279,13 +313,13 @@ export class Records {
       if (!terminal.includes(String(detail.execution?.status)) || !Number.isFinite(ended)
         || now - ended < 30 * 24 * 60 * 60 * 1000
         || detail.attempts.some(a => this.isLive(String(a.id)) || !terminal.includes(a.runState) || a.requiresAttention
-          || a.persistenceError && (a.runState !== 'resolved' || !a.reconciliation) || (a.cancellation && !a.stopConfirmation && a.runState !== 'start_failed'))) continue;
+          || a.persistenceError && (a.runState !== 'resolved' || !a.reconciliation) || (a.toolCalls ?? []).some((call:Record<string,any>) => this.toolNeedsReview(call) && !this.toolReconciled(call)) || (a.cancellation && !a.stopConfirmation && a.runState !== 'start_failed'))) continue;
       for (const attempt of detail.attempts) {
         const id = String(attempt.id);
-        if (attempt.cleanup?.status === 'cleaned') { attempts.push({attemptId:id,status:'cleaned'}); continue; }
+        if (attempt.cleanup?.status === 'cleaned' && (attempt.toolCalls ?? []).every((call:Record<string,any>)=>call.cleanup?.status === 'cleaned')) { attempts.push({attemptId:id,status:'cleaned'}); continue; }
         const save = (cleanup: object) => {
           const row = this.db.prepare('SELECT facts FROM attempts WHERE id = ?').get(id)!;
-          this.db.prepare('UPDATE attempts SET facts = ? WHERE id = ?').run(JSON.stringify({...JSON.parse(String(row.facts)), cleanup, logs:{...attempt.logs,complete:false}}),id);
+          this.db.prepare('UPDATE attempts SET facts = ? WHERE id = ?').run(JSON.stringify({...JSON.parse(String(row.facts)), cleanup, logs:{...attempt.logs,complete:false}, ...(attempt.toolCalls ? {toolCalls:attempt.toolCalls.map((call:Record<string,any>)=>({...call,cleanup,logs:{...call.logs,complete:false}}))} : {})}),id);
         };
         save({status:'unknown',startedAt:new Date(now).toISOString()});
         try {
@@ -296,11 +330,23 @@ export class Records {
             catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
           };
           checkDirectory(data); checkDirectory(join(data,'attempts')); checkDirectory(directory);
-          const names = (attempt.artifacts ?? []).map((a: {name:string}) => a.name);
-          if (names.some((name: unknown) => typeof name !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name))) throw Error('Unsafe artifact name');
-          if (names.length) checkDirectory(join(directory,'artifacts'));
-          for (const path of [join(directory,'stdout.log'),join(directory,'stderr.log'),...names.map((name:string)=>join(directory,'artifacts',name))]) {
-            try { if (!lstatSync(path).isFile()) throw Error('Cleanup target is not a regular file'); unlinkSync(path); }
+          const targets: string[] = [];
+          for (const evidence of [attempt,...(attempt.toolCalls ?? [])]) {
+            const tool = evidence !== attempt;
+            if (tool && (typeof evidence.id !== 'string' || !/^[1-9][0-9]*$/.test(evidence.id))) throw Error('Unsafe tool call identifier');
+            const base = tool ? join(directory,'tools',evidence.id) : directory;
+            if (tool) { checkDirectory(join(directory,'tools')); checkDirectory(base); }
+            const names = (evidence.artifacts ?? []).map((a: {name:string}) => a.name);
+            if (names.some((name: unknown) => typeof name !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name))) throw Error('Unsafe artifact name');
+            if (names.length) checkDirectory(join(base,'artifacts'));
+            targets.push(join(base,'stdout.log'),join(base,'stderr.log'),...(tool ? [join(base,'result.json')] : []),...names.map((name:string)=>join(base,'artifacts',name)));
+          }
+          for (const path of targets) {
+            try { if (!lstatSync(path).isFile()) throw Error('Cleanup target is not a regular file'); }
+            catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+          }
+          for (const path of targets) {
+            try { unlinkSync(path); }
             catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
           }
           if (attempt.kind === 'agent') {
