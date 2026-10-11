@@ -59,6 +59,53 @@ afterEach(async()=>{
   await Promise.all(children.splice(0).map(async c=>{if(c.exitCode===null&&c.signalCode===null){const exit=once(c,'exit');c.kill('SIGTERM');await exit}}));
   await Promise.all(dirs.splice(0).map(dir=>rm(dir,{recursive:true,force:true})));
 });
+test('operations drill finds silent live work, unconfirmed cancellation, controller exit and manual recovery via CLI', async () => {
+  const gate = await temporary('orch-operations-gate-');
+  const release = join(gate,'release');
+  const waiting = join(gate,'waiting');
+  const f = await fixture(`await ctx.exec(['sh']);const fs=await import('node:fs/promises');await fs.writeFile(${JSON.stringify(waiting)},'waiting');while(!(await fs.stat(${JSON.stringify(release)}).catch(()=>null)))await new Promise(r=>setTimeout(r,20));return {invalid:'Bearer report-secret'}`);
+  const original = children.pop()!; const exited = once(original,'exit'); original.kill('SIGTERM'); await exited;
+  const bin = await temporary('orch-operations-bin-');
+  await writeFile(join(bin,'docker'), `#!/bin/sh\nif [ "$1" = inspect ]; then echo '{"Running":false,"Status":"exited","ExitCode":0}'; else echo drill-output; fi\n`, {mode:0o700});
+  await start(f.data,f.config,`${bin}:${process.env.PATH}`);
+  const receipt = await submit(f); const id = receipt.executionId;
+  const query = async () => {
+    const child = spawn(process.execPath,['--import','tsx','examples/query-attention.ts','--socket',f.socket,'--repo','alpha'],{cwd:root});
+    let stdout=''; let stderr='';
+    child.stdout.on('data',d=>stdout+=d);child.stderr.on('data',d=>stderr+=d);
+    const [code]=await once(child,'exit');
+    return {code,stdout,stderr};
+  };
+  const {stat} = await import('node:fs/promises');
+  await expect.poll(async()=>Boolean(await stat(waiting).catch(()=>null))).toBe(true);
+  await new Promise(r=>setTimeout(r,150)); // No new output is not a fault or a stop proof.
+  expect((await cli(['show',id,'--socket',f.socket])).execution.status).toBe('running');
+  expect(JSON.parse((await query()).stdout).items).toEqual([]);
+  await cli(['cancel',id,'--socket',f.socket,'--reason','drill']);
+  await expect.poll(async()=>(await cli(['show',id,'--socket',f.socket])).execution.status).toBe('unknown');
+  const pending = JSON.parse((await query()).stdout);
+  expect(pending.items).toEqual([{requestId:receipt.requestId,executionId:id,status:'unknown',attemptId:expect.any(String),reasons:['needs_attention','stop_unconfirmed']}]);
+  const controller = children.pop()!; const crash = once(controller,'exit'); controller.kill('SIGKILL'); await crash;
+  expect((await query()).code).toBe(1);
+  await start(f.data,f.config,`${bin}:${process.env.PATH}`);
+  expect(JSON.parse((await query()).stdout).items[0].reasons).toContain('stop_unconfirmed');
+  const detail = await cli(['show',id,'--socket',f.socket]);
+  expect(detail.attempts[0]).toMatchObject({configVersion:'config-v2',actualSha:f.sha,location:{processIdentity:null,reconnectHandle:null}});
+  expect((await cli(['logs',id,'--socket',f.socket])).stdout).toContain('drill-output');
+  const audit=['--source','operator','--handling','checked adapter and host','--reason','controlled drill','--external-results','no external writes'];
+  await cli(['confirm-stop',id,'--socket',f.socket,...audit]);
+  await cli(['resolve',id,'--socket',f.socket,...audit]);
+  expect(JSON.parse((await query()).stdout).items).toEqual([]);
+  await writeFile(release,'released');
+  await cli(['retry',id,'--socket',f.socket,...audit]);
+  await finished(f.socket,id);
+  const failed = await query();
+  expect(failed.code).toBe(0);
+  expect(JSON.parse(failed.stdout).items[0]).toMatchObject({status:'completed',reasons:['failed']});
+  expect(failed.stdout).not.toContain('report-secret');
+  expect((await cli(['list','--socket',f.socket,'--repo','alpha','--status','completed']))[0].attempts).toHaveLength(2);
+},20000);
+
 realDockerTest('fixed SHA script failure is completed business result with CLI-readable logs and artifacts',async()=>{
   const f=await fixture(`const result=await ctx.exec(['sh','/workspace/test.sh']);return {business:{passed:result.exitCode===0},artifacts:['result.txt']}`);
   const receipt=await submit(f);
@@ -169,7 +216,7 @@ test('required attempt save failure prevents environment start',async()=>{
   const receipt=await submit(f);
   await new Promise(r=>setTimeout(r,100));
   const detail=await call(f.socket,{command:'show',id:receipt.executionId}) as any;
-  expect(detail.execution.status).toBe('queued');expect(detail.attempts).toEqual([]);
+  expect(detail.execution.status).toBe('start_failed');expect(detail.attempts).toEqual([]);
   const { readdir }=await import('node:fs/promises');
   expect(await readdir(f.data)).not.toContain('attempts');
   db.close();

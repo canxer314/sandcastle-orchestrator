@@ -8,6 +8,7 @@ import { executeRole } from './roles.js';
 import { execute, readArtifact, cancelExecution } from './execution.js';
 import { open } from 'node:fs/promises';
 import { constants } from 'node:fs';
+import { serviceLog } from './service-log.js';
 import { loadConfiguration, type Submission } from './config.js';
 
 export async function serve(data: string, configPath: string) {
@@ -24,6 +25,11 @@ export async function serve(data: string, configPath: string) {
     releaseLock();
     throw error;
   }
+  const executionFailed = (executionId: string, error: unknown) => {
+    serviceLog('execution_failure', error, executionId);
+    try { records.markExecutionFailure(executionId); }
+    catch (saveError) { serviceLog('execution_failure_save_failed', saveError, executionId); }
+  };
   const socket = join(data, 'control.sock');
   const server = createServer(async (req, res) => {
     try {
@@ -52,7 +58,7 @@ export async function serve(data: string, configPath: string) {
           result = submitted.receipt;
           if (submitted.newExecutionId) {
             const executionId = submitted.newExecutionId;
-            void (config.roles?.some(r=>r.id===message.submission.capability) ? executeRole(records,config,executionId,data) : execute(records, config, executionId, data)).catch(error => console.error(JSON.stringify({ error: String(error), executionId })));
+            void (config.roles?.some(r=>r.id===message.submission.capability) ? executeRole(records,config,executionId,data) : execute(records, config, executionId, data)).catch(error => executionFailed(executionId, error));
           }
           break;
         case 'list':
@@ -89,7 +95,7 @@ export async function serve(data: string, configPath: string) {
           const cancelledDetail = records.show(message.id);
           if(message.attempt && message.attempt !== cancelledDetail.attempts.at(-1)?.id) throw Error('Only the current attempt can be managed');
           result = records.cancel(message.id, message.reason);
-          void cancelExecution(records,message.id).catch(error=>console.error(JSON.stringify({error:String(error)})));
+          void cancelExecution(records,message.id).catch(error=>serviceLog('management_failure', error, String(message.id)));
           break;
         case 'confirm-stop':
         case 'resolve':
@@ -104,7 +110,7 @@ export async function serve(data: string, configPath: string) {
           }
           const audit = {source:message.source,handling:message.handling,reason:message.reason,externalResults:message.externalResults};
           result = message.command === 'confirm-stop' ? records.confirmStop(message.id,audit) : records.recover(message.id,audit,message.command==='retry');
-          if(message.command==='retry') void (config.roles?.some(r=>r.id===detail.request.capability) ? executeRole(records,config,String(result.execution!.id),data) : execute(records,config,String(result.execution!.id),data)).catch(error=>console.error(JSON.stringify({error:String(error)})));
+          if(message.command==='retry') void (config.roles?.some(r=>r.id===detail.request.capability) ? executeRole(records,config,String(result.execution!.id),data) : execute(records,config,String(result.execution!.id),data)).catch(error=>executionFailed(String(detail.execution!.id), error));
           break;
         }
         case 'show':

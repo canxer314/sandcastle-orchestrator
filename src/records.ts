@@ -244,6 +244,10 @@ export class Records {
     } catch (error) { this.db.exec('ROLLBACK'); throw error; }
   }
 
+  markExecutionFailure(id: string) {
+    this.db.prepare("UPDATE executions SET status = 'start_failed' WHERE id = ? AND status = 'queued'").run(id);
+  }
+
   markUnresolved(id: string, error: unknown) {
     this.unresolved.set(id, error instanceof Error ? error.message : 'Required record save failed');
   }
