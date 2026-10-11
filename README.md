@@ -82,7 +82,7 @@ pnpm start logs EXECUTION_ID --attempt ATTEMPT_ID --socket /srv/orchestrator-dat
 
 停止文件保留 `requested` 首行并增加 attempt/execution 身份、原因、请求时间及可读说明。Prompt 让 Agent 自主选择检查点，停止开展新工作、整理结果并正常结束，长工具调用可能延迟响应。`cancellationNotification: published/failed` 区分发送结果；published 不是结束证明。未配合、发送失败或保存未决继续保持 unknown，禁止替代尝试，后续调度必须继续计入主 Agent 额度；本版本尚未实现额度调度。可信 CLI 退出后才记录实际取消终态；取消不证明子 Agent、工具或远端任务停止，也不撤销写入。
 
-配置和 SQLite JSON 字段均为兼容性增加，原 CLI/socket 命令、旧记录及停止文件存在性检查保持有效。回退到此前版本不会执行新增期限，需先停止服务并核查活跃尝试，再按下述备份回退流程处理。受控 CLI/socket 测试覆盖期限和停止故障；#20 的真实 provider 停止读取、SDK 生命周期及实际退出仍需新的明确环境授权，#19 的真实运行记录不能替代该验收。
+配置和 SQLite JSON 字段均为兼容性增加，原 CLI/socket 命令、旧记录及停止文件存在性检查保持有效。经恢复者核实并 resolve 的未决执行，其历史 `persistenceError` 保留为审计信息，不再单独阻止到期清理；未 resolve 的错误仍保护相关证据。回退到此前版本不会执行新增期限，需先停止服务并核查活跃尝试，再按下述备份回退流程处理。真实正常路径验收固定在 [issue #20 实测代码版本](docs/issue-20-real-acceptance.md)；退出证据保存失败（35e6219）及合并后的到期清理交互均由受控 CLI/socket 回归覆盖，未在该次真实运行中验证。#19 的真实运行记录不能替代该验收。
 
 ## 取消与人工恢复
 

@@ -266,7 +266,7 @@ export class Records {
       if (!terminal.includes(String(detail.execution?.status)) || !Number.isFinite(ended)
         || now - ended < 30 * 24 * 60 * 60 * 1000
         || detail.attempts.some(a => this.isLive(String(a.id)) || !terminal.includes(a.runState) || a.requiresAttention
-          || a.persistenceError || (a.cancellation && !a.stopConfirmation && a.runState !== 'start_failed'))) continue;
+          || a.persistenceError && (a.runState !== 'resolved' || !a.reconciliation) || (a.cancellation && !a.stopConfirmation && a.runState !== 'start_failed'))) continue;
       for (const attempt of detail.attempts) {
         const id = String(attempt.id);
         if (attempt.cleanup?.status === 'cleaned') { attempts.push({attemptId:id,status:'cleaned'}); continue; }
