@@ -27,7 +27,7 @@ export async function serve(data: string, configPath: string) {
   }
   const executionFailed = (executionId: string, error: unknown) => {
     serviceLog('execution_failure', error, executionId);
-    try { records.markExecutionFailure(executionId); }
+    try { records.markExecutionFailure(executionId, config.version); }
     catch (saveError) { serviceLog('execution_failure_save_failed', saveError, executionId); }
   };
   const socket = join(data, 'control.sock');

@@ -112,7 +112,7 @@ node --import tsx src/cli.ts logs "$EXECUTION_ID" --socket "$DATA/control.sock" 
 node --import tsx examples/query-attention.ts --socket "$DATA/control.sock" --repo example
 ```
 
-`examples/query-attention.ts` 是只读外部脚本，调用现有 CLI 的 `list` JSON。成功输出单行 `{version:1,available:true,items:[...]}`，退出码 0，无待处理项时 `items:[]`。每项只含 `requestId/executionId/status/attemptId/reasons`，不转发 repo 名称、输入、错误文字、日志、环境变量、business 或人工处理文字。`reasons` 是 `failed`、`needs_attention`、`stop_unconfirmed` 的组合。脚本检查启动失败、契约错误、unknown/必要保存失败以及有取消意图但没有停止确认的尝试；正常 queued、静默 running 不告警，排队取消没有底层尝试也不算未确认停止。无尝试的启动前失败仍显示 `start_failed`，对应 `execution_failure` 服务日志；可核查配置后人工 retry。脚本查询有 30 秒超时及 16 MiB 输出上限，只约束查询，不约束执行。socket 不可用、CLI 失败、输出解析失败或达到上限，stdout 为空，stderr 单行 `{version:1,available:false,error:"Control query failed"}`，退出码 1。不能把失败当成正常的空列表。
+`examples/query-attention.ts` 是只读外部脚本，调用现有 CLI 的 `list` JSON。成功输出单行 `{version:1,available:true,items:[...]}`，退出码 0，无待处理项时 `items:[]`。每项只含 `requestId/executionId/status/attemptId/reasons`，不转发 repo 名称、输入、错误文字、日志、环境变量、business 或人工处理文字。`reasons` 是 `failed`、`needs_attention`、`stop_unconfirmed` 的组合。脚本检查启动失败、契约错误、unknown/必要保存失败以及有取消意图但没有停止确认的尝试；正常 queued、静默 running 不告警，排队取消没有底层尝试也不算未确认停止。无尝试的启动前失败仍显示 `start_failed`，对应 `execution_failure` 服务日志。`execution.startFailures` 在现有管理 JSON 中保留每次失败的 `recordedAt/configVersion/classification/reason/logEvent`，不保存任意异常文字；重启和人工 retry 都保留历史，没有该字段的旧记录仍有效。日志按 executionId、事件和时间查 journal；可核查配置后人工 retry。脚本查询有 30 秒超时及 16 MiB 输出上限，只约束查询，不约束执行。socket 不可用、CLI 失败、输出解析失败或达到上限，stdout 为空，stderr 单行 `{version:1,available:false,error:"Control query failed"}`，退出码 1。不能把失败当成正常的空列表。
 
 详情提供原始请求、尝试、配置版本、实际/选定 SHA、时间、失败原因、日志/产物引用及人工核对的外部结果。原始输入、日志、模型报告和外部结果可能敏感，只在受限环境查看。管理员按能力所用设施核对远端结果，不从模型文字推断成功。`location.container` 可用于 `docker inspect --format '{{json .State}}' NAME` 和 `docker logs NAME`；`processIdentity/reconnectHandle:null` 表示没有可靠宿主进程身份或重连句柄，不能用猜测的 PID 杀进程。名称是定位信息，不是停止证明。还需核对宿主入口、子 Agent、工具和远端操作。控制服务或主 Agent 退出、取消回执、单个容器退出都不证明全部停止。
 
@@ -125,7 +125,12 @@ umask 077
 summary=$(mktemp)
 trap 'rm -f "$summary"' EXIT
 if node --import tsx examples/query-attention.ts --socket "$DATA/control.sock" >"$summary"; then
-  if jq -e '.version == 1 and .available == true and (.items | length > 0)' "$summary" >/dev/null; then
+  count=$(jq -er 'if .version == 1 and .available == true and (.items | type == "array") then (.items | length) else error("invalid query summary") end' "$summary") || {
+    echo 'query summary validation unavailable or invalid' >&2
+    exit 1
+  }
+  case "$count" in ''|*[!0-9]*) echo 'invalid item count' >&2; exit 1;; esac
+  if [ "$count" -gt 0 ]; then
     notify-summary <"$summary" || { echo 'notification channel unavailable' >&2; exit 1; }
   fi
 else

@@ -109,9 +109,14 @@ test('background execution failures write safe service logs linked to the execut
   expect(errors).not.toContain('execution-secret');
   expect(JSON.parse(errors.trim())).toMatchObject({event:'execution_failure',executionId:receipt.body.executionId,error:'Control service failed'});
   await expect.poll(async()=>(await socketCall(f.socket,{command:'show',id:receipt.body.executionId})).body.execution.status).toBe('start_failed');
+  const failure = (await socketCall(f.socket,{command:'show',id:receipt.body.executionId})).body.execution.startFailures[0];
+  expect(failure).toMatchObject({configVersion:'v1',classification:'execution_start_failure',reason:'Execution failed before a durable attempt could start',logEvent:'execution_failure'});
+  expect(Number.isFinite(Date.parse(failure.recordedAt))).toBe(true);
+  await stop(child); await start(f);
+  expect((await socketCall(f.socket,{command:'show',id:receipt.body.executionId})).body.execution.startFailures).toEqual([failure]);
   const retry = await socketCall(f.socket,{command:'retry',id:receipt.body.executionId,source:'operator',handling:'checked startup failure',reason:'retry',externalResults:'nothing launched'});
   expect(retry.status).toBe(200);
-  await expect.poll(async()=>(await socketCall(f.socket,{command:'show',id:receipt.body.executionId})).body.execution.status).toBe('start_failed');
+  await expect.poll(async()=>(await socketCall(f.socket,{command:'show',id:receipt.body.executionId})).body.execution.startFailures?.length).toBe(2);
 });
 
 test('failure bookkeeping errors remain visible in safe service logs', async () => {
@@ -128,6 +133,9 @@ test('failure bookkeeping errors remain visible in safe service logs', async () 
     expect(errors).not.toContain('save-secret');
     expect(errors).not.toContain('startup-secret');
     expect(errors).toContain(receipt.body.executionId);
+    const detail = (await socketCall(f.socket,{command:'show',id:receipt.body.executionId})).body;
+    expect(detail.execution.status).toBe('queued');
+    expect(detail.execution.startFailures).toBeUndefined();
   } finally {db.close();}
 });
 
@@ -163,6 +171,26 @@ test('external attention query uses CLI JSON, exposes minimal fields and fails v
   expect(unavailable.stdout).toBe('');
   expect(JSON.parse(unavailable.stderr)).toEqual({version:1,available:false,error:'Control query failed'});
   expect(submission.body.accepted).toBe(true);
+});
+
+test.each(['empty','items','invalid','missing-jq','missing-channel'])('documented notification bridge handles %s without silently swallowing errors', async mode => {
+  const f = await fixture();
+  const {readFile} = await import('node:fs/promises');
+  const readme = await readFile(join(root,'README.md'),'utf8');
+  const snippet = readme.slice(readme.indexOf('umask 077\nsummary=$(mktemp)')).split('```')[0];
+  const bin = join(f.dir,'bin'); await mkdir(bin);
+  const marker = join(f.dir,'notified');
+  await writeFile(join(bin,'node'), '#!/bin/sh\nprintf "%s\\n" \'{"version":1,"available":true,"items":[]}\'\n', {mode:0o700});
+  await writeFile(join(bin,'notify-summary'), mode==='missing-channel'?'#!/bin/sh\nexit 127\n':`#!/bin/sh\ncat > ${JSON.stringify(marker)}\n`, {mode:0o700});
+  if(mode !== 'missing-jq') await writeFile(join(bin,'jq'), `#!/bin/sh\n${mode==='invalid'?'exit 4':['items','missing-channel'].includes(mode)?'echo 1; exit 0':'echo 0; exit 0'}\n`, {mode:0o700});
+  else await writeFile(join(bin,'jq'),'#!/bin/sh\nexit 127\n',{mode:0o700});
+  const script = join(f.dir,'bridge.sh');await writeFile(script,snippet);
+  const child=spawn('/bin/bash',[script],{env:{...process.env,PATH:`${bin}:/usr/bin:/bin`,DATA:f.dir}});
+  let errors='';child.stderr.on('data',d=>errors+=d);
+  const [code]=await once(child,'exit');
+  expect(code,errors).toBe(['empty','items'].includes(mode)?0:1);
+  const notified=await readFile(marker,'utf8').catch(()=>null);
+  expect(notified!==null).toBe(mode==='items');
 });
 
 test('socket submissions distinguish missing input from explicit null', async () => {
