@@ -22,6 +22,7 @@ export class Records {
   }
 
   async submit(submission: Submission, config: Configuration) {
+    const originalInput = JSON.stringify(submission.input);
     let rejection: string | null = null;
     try {
       if (!config.repos.some(repo => repo.id === submission.repo)) throw new Error('Unknown repo');
@@ -36,7 +37,7 @@ export class Records {
     this.db.exec('BEGIN IMMEDIATE');
     try {
       this.db.prepare('INSERT INTO requests VALUES (?, ?, ?, ?, ?, ?, ?)').run(
-        requestId, submission.repo, submission.capability, JSON.stringify(submission.input),
+        requestId, submission.repo, submission.capability, originalInput,
         submission.source, new Date().toISOString(), rejection,
       );
       if (rejection === null) this.db.prepare('INSERT INTO executions VALUES (?, ?, ?)').run(executionId, requestId, 'queued');
