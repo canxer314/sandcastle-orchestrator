@@ -33,7 +33,7 @@ export async function serve(data: string, configPath: string, maintenanceMode = 
     catch (saveError) { serviceLog('execution_failure_save_failed', saveError, executionId); }
   };
   let closing = false;
-  const dispatch = (newDeterministicId?: string) => {
+  const dispatch = () => {
     if (closing || records.maintenance().startsPaused) return;
     // ponytail: scan persisted records in the single control writer; add indexed
     // queue queries only if the local history makes this scan expensive.
@@ -51,7 +51,7 @@ export async function serve(data: string, configPath: string, maintenanceMode = 
       const capability = config.capabilities.find(capability => capability.id === detail.request.capability);
       const isPrimaryAgent = config.roleBindings?.some(binding => binding.role === detail.request.capability);
       if (config.roles?.some(role => role.id === detail.request.capability) && !isPrimaryAgent) continue;
-      if (!isPrimaryAgent && (detail.execution.id !== newDeterministicId || !capability?.execution || !config.environments.find(environment => environment.id === capability.environment)?.docker)) continue;
+      if (!isPrimaryAgent && (!records.canStart(String(detail.execution.id)) || !capability?.execution || !config.environments.find(environment => environment.id === capability.environment)?.docker)) continue;
       if (isPrimaryAgent) {
         const repo = config.repos.find(repo => repo.id === detail.request.repo);
         if (!repo || global >= (config.primaryAgentLimit ?? Infinity)
@@ -107,7 +107,7 @@ export async function serve(data: string, configPath: string, maintenanceMode = 
           }
           const submitted = await records.submit(message.submission as Submission, config);
           result = submitted.receipt;
-          dispatch(submitted.newExecutionId);
+          dispatch();
           break;
         case 'cleanup':
           result = records.cleanup(data);
@@ -182,7 +182,7 @@ export async function serve(data: string, configPath: string, maintenanceMode = 
           }
           const audit = {source:message.source,handling:message.handling,reason:message.reason,externalResults:message.externalResults};
           result = message.command === 'confirm-stop' ? records.confirmStop(message.id,audit,message.call,message.attempt) : records.recover(message.id,audit,message.command==='retry');
-          dispatch(message.command === 'retry' ? String(result.execution!.id) : undefined);
+          dispatch();
           break;
         }
         case 'show':
