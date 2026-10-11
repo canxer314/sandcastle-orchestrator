@@ -45,11 +45,11 @@ export async function openRoleTools(records:Records,config:Configuration,executi
         }catch(error){if(!validated){calls.pop();return {content:[{type:'text',text:'Capability input validation failed'}],isError:true}}unknown=true;try{save({runState:'unknown',error:'Required tool execution or record operation failed'})}catch(saveError){records.markUnresolved(attemptId,saveError)}return {content:[{type:'text',text:JSON.stringify({attemptId,actualSha,callId:String(number),runState:'unknown',error:'Tool execution or persistence failed; inspect current attempt'})}],isError:true};}finally{active=false;releaseIdle()}
       });
       mcp.registerTool('read_tool_file',{
-        description:'Read full tool stdout/stderr or registered artifact in 64 KiB base64 chunks. Only current attempt call references; nextOffset advances until truncated=false.',
-        inputSchema:z.object({callId:z.string().regex(/^[1-9][0-9]*$/),name:z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/),offset:z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).default(0)}).strict(),
-      },async ({callId,name,offset})=>{
+        description:'Read full tool stdout/stderr or registered artifact in 64 KiB base64 chunks. Use kind: artifact to read registered artifacts named stdout.log, stderr.log or result.json. Only current attempt call references; nextOffset advances until truncated=false.',
+        inputSchema:z.object({callId:z.string().regex(/^[1-9][0-9]*$/),name:z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/),kind:z.enum(['artifact']).optional(),offset:z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).default(0)}).strict(),
+      },async ({callId,name,kind,offset})=>{
         const facts=calls.find(c=>c.id===callId);if(!facts)throw Error('Tool call not found');
-        const log=['stdout.log','stderr.log'].includes(name);const result=name==='result.json';
+        const log=kind!=='artifact' && ['stdout.log','stderr.log'].includes(name);const result=kind!=='artifact' && name==='result.json';
         if(!log && !result && !facts.artifacts?.some((a:{name:string})=>a.name===name))throw Error('Artifact not registered');
         const path=join(directory,'tools',callId,...(log || result?[]:['artifacts']),name);
         for(const parent of [dirname(dirname(directory)),dirname(directory),directory,join(directory,'tools'),join(directory,'tools',callId),...(!log && !result?[join(directory,'tools',callId,'artifacts')]:[])])if(!(await lstat(parent)).isDirectory())throw Error('Tool evidence path is not a physical directory');
