@@ -9,6 +9,7 @@ import type { Configuration } from './config.js';
 import type { Records } from './records.js';
 import { git, snapshot } from './execution.js';
 import { runAgent } from './agent.js';
+import { prepareMcp } from './mcp.js';
 const execFileAsync=promisify(execFile);
 
 export async function executeRole(records:Records, config:Configuration, executionId:string, data:string) {
@@ -34,19 +35,27 @@ export async function executeRole(records:Records, config:Configuration, executi
     await git(workspace,['remote','remove','origin']);
     const actualSha=String((await git(workspace,['rev-parse','--verify',`${sha}^{commit}`])).stdout).trim();
     if(actualSha!==sha)throw Error('Resolved commit differs from requested SHA');
+    const mcp = await prepareMcp(config, role, {repo:repo.id,actualSha,workspace,attemptId:attempt});
+    let agent = provider.agent;
+    if (mcp.connections.length) {
+      try {
+        agent = provider.configureMcp!(provider.agent,mcp.connections);
+        if (!agent || typeof agent.buildPrintCommand !== 'function' || typeof agent.parseStreamLine !== 'function') throw Error('Invalid provider');
+      } catch { throw Error(`MCP provider configuration unavailable: ${provider.id}`); }
+    }
     const built=await role.buildPrompt({input:detail.request.input,repo:String(detail.request.repo),actualSha});
     if(typeof built!=='string' || !built)throw Error('Role prompt must be nonempty text');
     const stopDirectory=join(directory,'stop');await mkdir(stopDirectory,{mode:0o700});
-    const prompt=[built,...role.skills,...role.tools.map(id=>config.tools!.find(t=>t.id===id)!.description),'Cooperative cancellation: periodically read /orchestrator-stop/requested. If present, stop starting work and return promptly with your available report. This is a request, not forced termination.'].join('\n\n');
+    const prompt=[built,...role.skills,...role.tools.map(id=>config.tools!.find(t=>t.id===id)!.description),...(mcp.facts.length ? ['Administrator MCP service facts: '+JSON.stringify(mcp.facts),'Use the services\' native tools and feedback. Missing tools or unreadable log references are unavailable, not success. Distinguish business results, tool faults and unknown outcomes. A timeout/disconnection or agent exit does not prove remote work stopped. Do not repeat uncertain side effects without service-specific evidence.'] : []),'Cooperative cancellation: periodically read /orchestrator-stop/requested. If present, stop starting work and return promptly with your available report. This is a request, not forced termination.'].join('\n\n');
     await writeFile(join(directory,'stdout.log'),'');await writeFile(join(directory,'stderr.log'),'');
-    records.updateAttempt(attempt,{kind:'agent',actualSha,workspace,stopDirectory,container,branch,provider:provider.id,prompt,description:role.description,skills:role.skills,tools:role.tools,logs:{complete:false},sessionPolicy:'new'});
+    records.updateAttempt(attempt,{kind:'agent',actualSha,workspace,stopDirectory,container,branch,provider:provider.id,prompt,description:role.description,skills:role.skills,tools:role.tools,...(mcp.facts.length ? {mcp:mcp.facts} : {}),logs:{complete:false},sessionPolicy:'new'});
     const docker=environment.docker!;const binary=docker.binary ?? 'docker';
     const command=async(args:string[])=>{try{return await execFileAsync(binary,args,{env:{PATH:process.env.PATH},maxBuffer:8*1024*1024})}catch{throw Error('Docker facility operation failed; inspect the recorded container identity')}};
     const sandboxProvider=createBindMountSandboxProvider({name:'orchestrator-docker',env:docker.env ?? {},sandboxHomedir:'/home/agent',create:async options=>{
       const current=records.show(executionId).attempts.at(-1);
       if(current?.cancellation)throw Error('Cancellation requested before agent start');
       records.updateAttempt(attempt,{runState:'running'});launched=true;
-      const mounts=options.mounts.flatMap(m=>['--mount',`type=bind,src=${m.hostPath},dst=${m.sandboxPath},readonly`]);
+      const mounts=[...options.mounts,...mcp.mounts].flatMap(m=>['--mount',`type=bind,src=${m.hostPath},dst=${m.sandboxPath},readonly`]);
       await command(['run','--detach','--pull=never','--name',container,'--network',docker.network ?? 'none','--cap-drop','ALL','--security-opt','no-new-privileges','--read-only','--user',`${process.getuid!()}:${process.getgid!()}`,'--tmpfs','/tmp:rw,nosuid,nodev','--tmpfs',`/home/agent:rw,nosuid,nodev,uid=${process.getuid!()},gid=${process.getgid!()},mode=0700`,...mounts,'--mount',`type=bind,src=${stopDirectory},dst=/orchestrator-stop,readonly`,...Object.entries({...options.env,HOME:'/home/agent',GIT_CONFIG_NOSYSTEM:'1',GIT_CONFIG_SYSTEM:'/dev/null',GIT_TERMINAL_PROMPT:'0',GIT_NO_REPLACE_OBJECTS:'1',GIT_NO_LAZY_FETCH:'1'}).flatMap(([key,value])=>['--env',`${key}=${value}`]),'--entrypoint','sh',docker.image,'-c','while :; do sleep 3600; done']);
       const sandboxPath='/home/agent/workspace';
       return {worktreePath:sandboxPath,exec:(text,opts)=>new Promise((resolve,reject)=>{
@@ -64,7 +73,7 @@ export async function executeRole(records:Records, config:Configuration, executi
       },close:async()=>{ /* No automatic stop/remove: retained for audited administrator cleanup. */ }};
     }});
     const sandbox=await createSandbox({cwd:workspace,branch,baseBranch:sha,sandbox:sandboxProvider});
-    const result=await runAgent(sandbox,provider.agent,prompt);
+    const result=await runAgent(sandbox,agent,prompt);
     const facts={...result,endedAt:new Date().toISOString(),logs:{complete:result.exitCode!==null && !result.error},stopConfirmation:result.exitCode===null?undefined:{kind:'agent-exit-marker',confirmedAt:new Date().toISOString(),exitCode:result.exitCode}};
     if(result.exitCode===null){records.finishAttempt(attempt,'unknown',{...facts,error:result.error ?? 'Agent exit evidence unavailable'});return;}
     try {

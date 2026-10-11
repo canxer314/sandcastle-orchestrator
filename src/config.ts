@@ -48,8 +48,48 @@ export async function loadConfiguration(path: string): Promise<Configuration> {
     if(environment.docker.network==='host')throw Error('Role Docker host network is not permitted');
     bindings.add(binding.role);
   }
+  if (config.mcpServices !== undefined && !Array.isArray(config.mcpServices)) throw Error('Invalid MCP services');
+  const serviceIds = new Set<string>();
+  for (const service of config.mcpServices ?? []) {
+    if (!service || typeof service.id !== 'string' || !/^[a-zA-Z0-9_-]+$/.test(service.id) || serviceIds.has(service.id) || typeof service.prepare !== 'function' || !Array.isArray(service.tools) || service.tools.some((t: unknown) => typeof t !== 'string' || !t) || !service.capabilities || typeof service.access !== 'string' || !service.access || !['none','code'].includes(service.context)) throw Error('Invalid MCP service');
+    serviceIds.add(service.id);
+    for (const key of ['context','directory','logs','longTasks','query','cancel','retry']) if (service.capabilities[key] !== null && (typeof service.capabilities[key] !== 'string' || !service.capabilities[key])) throw Error(`Missing MCP capability description: ${service.id}/${key}`);
+  }
+  for (const role of config.roles ?? []) {
+    if (role.mcp !== undefined && !Array.isArray(role.mcp)) throw Error(`Invalid MCP references: ${role.id}`);
+    const ids = new Set<string>();
+    for (const reference of role.mcp ?? []) {
+      if (!reference || typeof reference.service !== 'string') throw Error(`Invalid MCP reference: ${role.id}`);
+      const service = config.mcpServices?.find((s: McpService) => s.id === reference.service);
+      if (!service) throw Error(`Unknown MCP service: ${reference.service}`);
+      if (ids.has(reference.service) || !Array.isArray(reference.tools) || !reference.tools.length || reference.tools.some((t: unknown) => typeof t !== 'string' || !service.tools.includes(t)) || (reference.requiredCapabilities !== undefined && (!Array.isArray(reference.requiredCapabilities) || reference.requiredCapabilities.some((c: string) => !Object.hasOwn(service.capabilities,c))))) throw Error(`Invalid MCP tool or capability references: ${role.id}`);
+      ids.add(reference.service);
+      const binding = config.roleBindings?.find((b: {role:string}) => b.role === role.id);
+      if (binding && typeof config.providers.find((p: {id:string}) => p.id === binding.provider)?.configureMcp !== 'function') throw Error(`Provider cannot configure MCP: ${binding.provider}`);
+    }
+  }
   return config;
 }
+
+export type McpCapability = 'context' | 'directory' | 'logs' | 'longTasks' | 'query' | 'cancel' | 'retry';
+export interface McpService {
+  id: string;
+  tools: string[];
+  // null means unavailable; text describes the actual service behavior and limits.
+  capabilities: Record<McpCapability, string | null>;
+  access: string;
+  context: 'none' | 'code';
+  prepare(context: {repo: string; actualSha: string; workspace: string; attemptId: string}): Promise<{
+    configFile: string;
+    binding?: {repo: string; actualSha: string; location: string};
+  }>;
+}
+export interface McpReference {
+  service: string;
+  tools: string[];
+  requiredCapabilities?: McpCapability[];
+}
+export interface McpConnection {service: string; configFile: string; tools: string[]}
 
 export interface Role {
   id: string;
@@ -58,6 +98,7 @@ export interface Role {
   buildPrompt(context: {input: unknown; repo: string; actualSha: string}): string | Promise<string>;
   skills: string[];
   tools: string[];
+  mcp?: McpReference[];
   validateReport(output: string): unknown;
 }
 
@@ -72,7 +113,8 @@ export interface Configuration {
   version: string;
   roles?: Role[];
   tools?: {id:string; description:string}[];
-  providers?: {id: string; agent: AgentProvider}[];
+  mcpServices?: McpService[];
+  providers?: {id: string; agent: AgentProvider; configureMcp?(agent: AgentProvider, connections: McpConnection[]): AgentProvider}[];
   roleBindings?: {role: string; provider: string; environment: string; commit(input: unknown): string}[];
   repos: { id: string; location: string }[];
   environments: { id: string; docker?: { image: string; binary?: string; network?: string; env?: Record<string,string> } }[];
