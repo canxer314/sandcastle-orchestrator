@@ -80,7 +80,8 @@ export async function serve(data: string, configPath: string) {
             result = {attemptId:attempt.id,actualSha:attempt.actualSha,stdout:stdout?.text??null,stderr:stderr?.text??null,truncated:{stdout:stdout?.truncated??false,stderr:stderr?.truncated??false},complete:attempt.logs?.complete === true && stdout !== null && stderr !== null};
           } else {
             if (!attempt.artifacts?.some((a: {name:string}) => a.name === message.name)) throw Error('Artifact not registered');
-            result = {attemptId:attempt.id,actualSha:attempt.actualSha,name:message.name,encoding:'base64',content:await readArtifact(join(directory,'artifacts'),message.name)};
+            const content=await readArtifact(join(directory,'artifacts'),message.name,message.offset);
+            result = {attemptId:attempt.id,actualSha:attempt.actualSha,name:message.name,encoding:'base64',...(typeof content==='string'?{content}:content)};
           }
           break;
         }

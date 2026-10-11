@@ -9,6 +9,7 @@ import type { Configuration } from './config.js';
 import type { Records } from './records.js';
 import { git, snapshot } from './execution.js';
 import { runAgent } from './agent.js';
+import { serveRoleTools } from './role-tools.js';
 const execFileAsync=promisify(execFile);
 
 export async function executeRole(records:Records, config:Configuration, executionId:string, data:string) {
@@ -24,6 +25,9 @@ export async function executeRole(records:Records, config:Configuration, executi
   const attempt=records.beginAttempt(executionId,config.version,role.id,environment.id,sha,{kind:'agent',provider:provider.id,sessionPolicy:'new'});
   const directory=join(data,'attempts',attempt);const workspace=join(directory,'repo');const container=`orch-${attempt}-1`;const branch=`orch/${attempt}`;
   let launched=false;
+  let toolServer:Awaited<ReturnType<typeof serveRoleTools>>|undefined;
+  const callableTools=role.tools.map(id=>config.tools!.find(t=>t.id===id)!).filter(t=>t.read);
+  const toolDirectory=join(directory,'tools');
   try {
     await mkdir(workspace,{recursive:true,mode:0o700});
     // Validate the same fixed-tree boundary as deterministic execution before cloning.
@@ -37,9 +41,10 @@ export async function executeRole(records:Records, config:Configuration, executi
     const built=await role.buildPrompt({input:detail.request.input,repo:String(detail.request.repo),actualSha});
     if(typeof built!=='string' || !built)throw Error('Role prompt must be nonempty text');
     const stopDirectory=join(directory,'stop');await mkdir(stopDirectory,{mode:0o700});
-    const prompt=[built,...role.skills,...role.tools.map(id=>config.tools!.find(t=>t.id===id)!.description),'Cooperative cancellation: periodically read /orchestrator-stop/requested. If present, stop starting work and return promptly with your available report. This is a request, not forced termination.'].join('\n\n');
+    if(callableTools.length)toolServer=await serveRoleTools(toolDirectory,callableTools,attempt,actualSha,error=>{try{records.updateAttempt(attempt,{toolObservationError:error});}catch(saveError){records.markUnresolved(attempt,saveError);}});
+    const prompt=[built,...role.skills,...role.tools.map(id=>config.tools!.find(t=>t.id===id)!.description),...(callableTools.length?['Call deployed read-only tools with node /orchestrator-tools/call.mjs TOOL_ID JSON_INPUT. Tools are scoped by administrator configuration. Results are observed source data, not verified model conclusions. Tool failures mean evidence is unavailable; report limitations instead of inventing observations.']:[]),'Cooperative cancellation: periodically read /orchestrator-stop/requested. If present, stop starting work and return promptly with your available report. This is a request, not forced termination.'].join('\n\n');
     await writeFile(join(directory,'stdout.log'),'');await writeFile(join(directory,'stderr.log'),'');
-    records.updateAttempt(attempt,{kind:'agent',actualSha,workspace,stopDirectory,container,branch,provider:provider.id,prompt,description:role.description,skills:role.skills,tools:role.tools,logs:{complete:false},sessionPolicy:'new'});
+    records.updateAttempt(attempt,{kind:'agent',actualSha,workspace,stopDirectory,container,branch,provider:provider.id,prompt,description:role.description,skills:role.skills,tools:role.tools,logs:{complete:false},sessionPolicy:'new',...(callableTools.length?{artifacts:[{name:'observations.jsonl',attemptId:attempt,actualSha,kind:'tool-observations'}]}:{})});
     const docker=environment.docker!;const binary=docker.binary ?? 'docker';
     const command=async(args:string[])=>{try{return await execFileAsync(binary,args,{env:{PATH:process.env.PATH},maxBuffer:8*1024*1024})}catch{throw Error('Docker facility operation failed; inspect the recorded container identity')}};
     const sandboxProvider=createBindMountSandboxProvider({name:'orchestrator-docker',env:docker.env ?? {},sandboxHomedir:'/home/agent',create:async options=>{
@@ -47,7 +52,7 @@ export async function executeRole(records:Records, config:Configuration, executi
       if(current?.cancellation)throw Error('Cancellation requested before agent start');
       records.updateAttempt(attempt,{runState:'running'});launched=true;
       const mounts=options.mounts.flatMap(m=>['--mount',`type=bind,src=${m.hostPath},dst=${m.sandboxPath},readonly`]);
-      await command(['run','--detach','--pull=never','--name',container,'--network',docker.network ?? 'none','--cap-drop','ALL','--security-opt','no-new-privileges','--read-only','--user',`${process.getuid!()}:${process.getgid!()}`,'--tmpfs','/tmp:rw,nosuid,nodev','--tmpfs',`/home/agent:rw,nosuid,nodev,uid=${process.getuid!()},gid=${process.getgid!()},mode=0700`,...mounts,'--mount',`type=bind,src=${stopDirectory},dst=/orchestrator-stop,readonly`,...Object.entries({...options.env,HOME:'/home/agent',GIT_CONFIG_NOSYSTEM:'1',GIT_CONFIG_SYSTEM:'/dev/null',GIT_TERMINAL_PROMPT:'0',GIT_NO_REPLACE_OBJECTS:'1',GIT_NO_LAZY_FETCH:'1'}).flatMap(([key,value])=>['--env',`${key}=${value}`]),'--entrypoint','sh',docker.image,'-c','while :; do sleep 3600; done']);
+      await command(['run','--detach','--pull=never','--name',container,'--network',docker.network ?? 'none','--cap-drop','ALL','--security-opt','no-new-privileges','--read-only','--user',`${process.getuid!()}:${process.getgid!()}`,'--tmpfs','/tmp:rw,nosuid,nodev','--tmpfs',`/home/agent:rw,nosuid,nodev,uid=${process.getuid!()},gid=${process.getgid!()},mode=0700`,...mounts,...(callableTools.length?['--mount',`type=bind,src=${toolDirectory},dst=/orchestrator-tools,readonly`]:[]),'--mount',`type=bind,src=${stopDirectory},dst=/orchestrator-stop,readonly`,...Object.entries({...options.env,HOME:'/home/agent',GIT_CONFIG_NOSYSTEM:'1',GIT_CONFIG_SYSTEM:'/dev/null',GIT_TERMINAL_PROMPT:'0',GIT_NO_REPLACE_OBJECTS:'1',GIT_NO_LAZY_FETCH:'1'}).flatMap(([key,value])=>['--env',`${key}=${value}`]),'--entrypoint','sh',docker.image,'-c','while :; do sleep 3600; done']);
       const sandboxPath='/home/agent/workspace';
       return {worktreePath:sandboxPath,exec:(text,opts)=>new Promise((resolve,reject)=>{
         const child=spawn(binary,['exec','-i','--workdir',opts?.cwd ?? sandboxPath,container,'sh','-c',text],{env:{PATH:process.env.PATH},stdio:['pipe','pipe','pipe']});
@@ -65,14 +70,39 @@ export async function executeRole(records:Records, config:Configuration, executi
     }});
     const sandbox=await createSandbox({cwd:workspace,branch,baseBranch:sha,sandbox:sandboxProvider});
     const result=await runAgent(sandbox,provider.agent,prompt);
-    const facts={...result,endedAt:new Date().toISOString(),logs:{complete:result.exitCode!==null && !result.error},stopConfirmation:result.exitCode===null?undefined:{kind:'agent-exit-marker',confirmedAt:new Date().toISOString(),exitCode:result.exitCode}};
+    const largeOutput=result.output!==null && Buffer.byteLength(result.output)>65536;
+    const facts={...result,output:largeOutput?result.output!.slice(0,65536):result.output,...(largeOutput?{outputTruncated:true}:{}),endedAt:new Date().toISOString(),logs:{complete:result.exitCode!==null && !result.error},stopConfirmation:result.exitCode===null?undefined:{kind:'agent-exit-marker',confirmedAt:new Date().toISOString(),exitCode:result.exitCode}};
+    // Keep lifecycle evidence available to every storage-failure path; stopConfirmation
+    // is saved with the final state because it also closes the mutable-attempt guard.
+    let report:object|undefined;
+    try {
+      if(result.output!==null) {
+        await mkdir(join(directory,'artifacts'),{recursive:true,mode:0o700});
+        await writeFile(join(directory,'artifacts','report.txt'),result.output);
+        report={name:'report.txt',size:Buffer.byteLength(result.output),complete:result.exitCode!==null,truncated:false};
+        const artifacts=records.show(executionId).attempts.find(a=>a.id===attempt)?.artifacts ?? [];
+        records.updateAttempt(attempt,{report,artifacts:[...artifacts,{name:'report.txt',attemptId:attempt,actualSha,kind:'model-output'}]});
+      }
+    }catch(error){
+      try {records.finishAttempt(attempt,'unknown',{...facts,report:{name:'report.txt',missing:true,complete:false},reportPersistenceError:'Required model report could not be saved'});}catch(saveError){records.markUnresolved(attempt,saveError);}return;
+    }
     if(result.exitCode===null){records.finishAttempt(attempt,'unknown',{...facts,error:result.error ?? 'Agent exit evidence unavailable'});return;}
+    let parsed:unknown;
     try {
       if(result.output===null)throw Error('No role output available');
-      const returned=await role.validateReport(result.output!);
-      const parsed=JSON.parse(JSON.stringify(returned));
-      records.finishAttempt(attempt,'completed',{...facts,contract:'valid',business:parsed});
-    }catch(error){records.finishAttempt(attempt,'completed',{...facts,contract:'error',contractError:error instanceof Error?error.message:'Invalid role report'});}
+      parsed=JSON.parse(JSON.stringify(await role.validateReport(result.output)));
+    }catch(error){
+      try {records.finishAttempt(attempt,'completed',{...facts,contract:'error',contractError:error instanceof Error?error.message:'Invalid role report'});}catch(saveError){records.markUnresolved(attempt,saveError);}return;
+    }
+    try {
+      if(Buffer.byteLength(JSON.stringify(parsed))>65536) {
+        await writeFile(join(directory,'artifacts','business.json'),JSON.stringify(parsed));
+        const artifacts=records.show(executionId).attempts.find(a=>a.id===attempt)?.artifacts ?? [];
+        records.finishAttempt(attempt,'completed',{...facts,contract:'valid',businessReference:{name:'business.json',encoding:'json',complete:true},artifacts:[...artifacts,{name:'business.json',attemptId:attempt,actualSha,kind:'validated-report'}]});
+      } else records.finishAttempt(attempt,'completed',{...facts,contract:'valid',business:parsed});
+    }catch(error){
+      try {records.finishAttempt(attempt,'unknown',{...facts,reportPersistenceError:'Required validated report or completion record could not be saved'});}catch(saveError){records.markUnresolved(attempt,saveError);}
+    }
   }catch(error){try{records.finishAttempt(attempt,launched?'unknown':'start_failed',{error:error instanceof Error?error.message:'Role launch failed'})}catch(saveError){records.markUnresolved(attempt,saveError)}}
-  finally{records.endLive(attempt)}
+  finally{if(toolServer)await toolServer.close();records.endLive(attempt)}
 }

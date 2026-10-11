@@ -76,6 +76,31 @@ pnpm start logs EXECUTION_ID --attempt ATTEMPT_ID --socket /srv/orchestrator-dat
 
 2026-10-11 已在授权环境完成真实只读单角色运行与人工 retry，通过 Claude Code → CC-Switch → Codex OAuth 路径验证挂载、认证、报告、session 导出和退出证据，详见 [验收记录](docs/issue-19-real-acceptance.md)。此结果不代表其他 provider 或真实协作取消响应通过；并发调度 #20 不在本实现范围。
 
+## PR 共性问题分析（#25，本地实现）
+
+`examples/pr-analysis.ts` 提供普通角色、Prompt、Skill 和具体只读 `pr-snapshot` 工具；在可信部署配置中引用 `prAnalysis`，配置获准 GitHub repo/PR 白名单、快照路径、登记 checkout、固定 SHA selector、已授权 provider 和预部署镜像。没有分析调度模式，不要求报告 JSON，不固定收集/分类步骤。角色按需调用 `node /orchestrator-tools/call.mjs pr-snapshot '{"number":31}'`；工具不是只写在 Prompt 中的说明。
+
+本增量采用管理员提供的离线证据，不联网采集或独立核验 GitHub。快照格式为 `{version,collectedAt,pullRequests:[{repo,number,url,updatedAt,headSha,body,reviews,diff,missing,truncated}]}`：时间为可解析日期，SHA 必须完整，正文/diff 为字符串，reviews 为数组，missing 为缺失内容名称数组，truncated 必须显式布尔值；文件须为普通非 symlink，最大 64 MiB。管理员负责来源授权和快照真实性；不要填凭据。工具只读部署时固定的路径，参数只接受白名单 PR number，不能选择任意文件、repo、命令或 GitHub API。每次观察返回 `source.kind: administrator-snapshot`、version、采集时间、完整快照 SHA-256、`verifiedAgainstGitHub:false` 与 PR 版本/SHA、缺失/截断线索。PR headSha 是快照所述版本，不冒充 checkout 的实际 SHA；后者仍由 Git 核对并绑定尝试。
+
+可选 `tools[].read(input)` 是管理员部署的可信代码，不是函数名称保证只读。这个具体工具仅使用文件只读打开，不调用 shell、GitHub 或写 API。专属工具 Unix socket 仅开放当前角色绑定的工具，拒绝 64 KiB 以上请求及额外字段；不挂管理 socket、证据源目录、宿主凭据或生产写凭据。工具目录 readonly 挂载，socket `0600`，容器与控制服务使用相同 UID/GID。示例 `network:none` 默认 fail-closed，仅可使用受控离线 provider，不宣称真实模型可运行；真实模型需要另外授权并由实际 egress 设施只允许模型 endpoint，不能仅改成 unrestricted bridge 并注入凭据。不提供 GitHub 凭据，不回退到宿主或更宽环境，本增量不建设网络配置平台。Docker UID/socket 连通性与模型网络策略须在实际授权部署验证。
+
+```sh
+pnpm start submit --socket /srv/orchestrator-data/control.sock --repo example \
+  --capability pr-analysis --source manual \
+  --input '{"sha":"0123456789012345678901234567890123456789","pullRequests":[31,32],"question":"哪些问题反复出现？"}'
+pnpm start show EXECUTION_ID --socket /srv/orchestrator-data/control.sock
+pnpm start artifact EXECUTION_ID --name observations.jsonl --socket /srv/orchestrator-data/control.sock
+pnpm start artifact EXECUTION_ID --name report.txt --offset 0 --socket /srv/orchestrator-data/control.sock
+```
+
+工具观察独立写入每次尝试的 `observations.jsonl`，包含工具、参数、观察时间、attempt/实际 SHA、结果或故障；必要文件保存成功后才回复 Agent，失败不交付结果，`show.toolObservationError` 明示缺口。模型报告另存 `report.txt`，建议不自动变成修复、请求、评论或 Issue。旧尝试事实/报告不被 retry 或来源变化改写；重试可能得到新版本证据，其 digest/时间另行记录。报告应区分观察与推断，证据不足或工具故障应表达限制，不能把“没有证据”写成“没有问题”。
+
+新角色输出与校验后的业务值各超过 64 KiB 时文件化：`output` 只保留预览并设置 `outputTruncated:true`，完整模型文本见 `report` 引用；大的业务值不变类型或伪装为内联 `business`，改用显式 `businessReference` 指向 `business.json`（JSON 编码原校验返回值）。小报告的 `output/business` 与历史内联记录保持原形状。`report.complete` 表示有 CLI 结束证据，`truncated:false` 表示保存的输出未裁剪，不保证业务证据充分。不存在输出不宣称有报告；文件缺失/非普通文件读取失败。
+
+`artifact` 不带 offset 保持原 base64 响应和 8 MiB 上限；新增 `--offset`（socket 数字字段 `offset`）按字节读取至多 1 MiB，响应含 `offset,nextOffset,size,complete`。从 0 开始，依次以 nextOffset 读取至 complete，把每块 base64 解码后的字节拼接再按 UTF-8/JSON 解析；不要逐块解码文本以免拆开多字节字符。这样大报告/事实可以完整读取，`logs` 仍是明确标注截断的 64 KiB 尾部，不替代报告。新增 JSON facts/文件不改旧 SQLite schema，备份/回退必须包含完整 DATA；旧版本不能读取新分块协议，回退规则仍按下节执行。
+
+受控 CLI/socket 与实际工具入口测试覆盖授权范围、故障/证据不足、来源变化保留旧事实、观察保存失败和 9 MiB 报告完整读取。**本任务未授权或执行真实模型、容器、远端写入；#25 的真实端到端业务质量与 Docker socket/模型环境验收仍待明确授权，不能借用 #19 验收声称通过。**
+
 ## 取消与人工恢复
 
 重启不消费历史 queued 请求，也不重跑、重连或接管旧 starting/running 尝试。`show` 的 `location` 如实返回容器名；harness process identity 和 reconnect handle 不可得时为 `null`，不能据此声称已停止。
