@@ -48,9 +48,12 @@ test('CLI cancellation of an ended start_failed attempt preserves audit without 
  const cancelled=await cli(f.socket,['cancel','execution','--reason','retire failed launch']);
  expect(cancelled).toMatchObject({execution:{status:'start_failed',cancellation:{reason:'retire failed launch'}},attempts:[{runState:'start_failed',endedAt:'2026-01-01T00:00:00Z',cancellation:{reason:'retire failed launch'}}]});
  expect(cancelled.attempts[0].stopConfirmation).toBeUndefined();
+ const query=async()=>{const child=spawn(process.execPath,['--import','tsx','examples/query-attention.ts','--socket',f.socket],{cwd:root});let out='';let err='';child.stdout.on('data',d=>out+=d);child.stderr.on('data',d=>err+=d);const [code]=await once(child,'exit');expect(code,err).toBe(0);return JSON.parse(out)};
+ expect(await query()).toEqual({version:1,available:true,items:[{requestId:'request',executionId:'execution',status:'start_failed',attemptId:'attempt',reasons:['failed']}]});
  expect(await cli(f.socket,['cleanup'])).toMatchObject({attempts:[{attemptId:'attempt',status:'cleaned'}]});
  expect(await cli(f.socket,['logs','execution'])).toMatchObject({availability:'cleaned',complete:false});
  expect(await cli(f.socket,['show','execution'])).toMatchObject({attempts:[{runState:'start_failed',cancellation:{reason:'retire failed launch'},cleanup:{status:'cleaned'}}]});
+ expect((await query()).items[0].reasons).toEqual(['failed']);
 });
 
 test('CLI cleanup includes a cancelled-intent start_failed history after a completed retry ages thirty days',async()=>{
