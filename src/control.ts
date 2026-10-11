@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { acquireControlLock } from './lock.js';
 import { checkDataSeparation } from './paths.js';
 import { Records } from './records.js';
+import { executeRole } from './roles.js';
 import { execute, readArtifact, cancelExecution } from './execution.js';
 import { open } from 'node:fs/promises';
 import { constants } from 'node:fs';
@@ -51,7 +52,7 @@ export async function serve(data: string, configPath: string) {
           result = submitted.receipt;
           if (submitted.newExecutionId) {
             const executionId = submitted.newExecutionId;
-            void execute(records, config, executionId, data).catch(error => console.error(JSON.stringify({ error: String(error), executionId })));
+            void (config.roles?.some(r=>r.id===message.submission.capability) ? executeRole(records,config,executionId,data) : execute(records, config, executionId, data)).catch(error => console.error(JSON.stringify({ error: String(error), executionId })));
           }
           break;
         case 'list':
@@ -98,11 +99,12 @@ export async function serve(data: string, configPath: string) {
           if (message.attempt && message.attempt !== detail.attempts.at(-1)?.id) throw Error('Only the current attempt can be managed');
           if(message.command==='retry') {
             const capability = config.capabilities.find(c=>c.id===detail.request.capability);
-            if(!config.repos.some(r=>r.id===detail.request.repo) || !capability?.execution || !config.environments.find(e=>e.id===capability.environment)?.docker) throw Error('Current configuration cannot execute this request');
+            const roleBinding = config.roleBindings?.find(b=>b.role===detail.request.capability);
+            if(!config.repos.some(r=>r.id===detail.request.repo) || (!roleBinding && (!capability?.execution || !config.environments.find(e=>e.id===capability.environment)?.docker))) throw Error('Current configuration cannot execute this request');
           }
           const audit = {source:message.source,handling:message.handling,reason:message.reason,externalResults:message.externalResults};
           result = message.command === 'confirm-stop' ? records.confirmStop(message.id,audit) : records.recover(message.id,audit,message.command==='retry');
-          if(message.command==='retry') void execute(records,config,String(result.execution!.id),data).catch(error=>console.error(JSON.stringify({error:String(error)})));
+          if(message.command==='retry') void (config.roles?.some(r=>r.id===detail.request.capability) ? executeRole(records,config,String(result.execution!.id),data) : execute(records,config,String(result.execution!.id),data)).catch(error=>console.error(JSON.stringify({error:String(error)})));
           break;
         }
         case 'show':
