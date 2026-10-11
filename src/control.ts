@@ -11,7 +11,8 @@ import { constants } from 'node:fs';
 import { serviceLog } from './service-log.js';
 import { loadConfiguration, type Submission } from './config.js';
 
-export async function serve(data: string, configPath: string) {
+export async function serve(data: string, configPath: string, maintenanceMode = 'normal') {
+  if (!['normal', 'paused', 'restore'].includes(maintenanceMode)) throw Error('Invalid startup maintenance mode');
   const config = await loadConfiguration(configPath);
   await checkDataSeparation(data, configPath, config);
   process.umask(0o077);
@@ -21,6 +22,7 @@ export async function serve(data: string, configPath: string) {
   let records: Records;
   try {
     records = new Records(join(data, 'records.sqlite'));
+    records.startMaintenance(maintenanceMode);
   } catch (error) {
     releaseLock();
     throw error;
@@ -31,8 +33,8 @@ export async function serve(data: string, configPath: string) {
     catch (saveError) { serviceLog('execution_failure_save_failed', saveError, executionId); }
   };
   let closing = false;
-  const dispatch = (newDeterministicId?: string) => {
-    if (closing) return;
+  const dispatch = () => {
+    if (closing || records.maintenance().startsPaused) return;
     // ponytail: scan persisted records in the single control writer; add indexed
     // queue queries only if the local history makes this scan expensive.
     const details = records.list();
@@ -49,7 +51,7 @@ export async function serve(data: string, configPath: string) {
       const capability = config.capabilities.find(capability => capability.id === detail.request.capability);
       const isPrimaryAgent = config.roleBindings?.some(binding => binding.role === detail.request.capability);
       if (config.roles?.some(role => role.id === detail.request.capability) && !isPrimaryAgent) continue;
-      if (!isPrimaryAgent && (detail.execution.id !== newDeterministicId || !capability?.execution || !config.environments.find(environment => environment.id === capability.environment)?.docker)) continue;
+      if (!isPrimaryAgent && (!records.canStart(String(detail.execution.id)) || !capability?.execution || !config.environments.find(environment => environment.id === capability.environment)?.docker)) continue;
       if (isPrimaryAgent) {
         const repo = config.repos.find(repo => repo.id === detail.request.repo);
         if (!repo || global >= (config.primaryAgentLimit ?? Infinity)
@@ -77,7 +79,17 @@ export async function serve(data: string, configPath: string) {
       const message = JSON.parse(body);
       let result;
       switch (message?.command) {
+        case 'maintenance':
+          result = records.maintenance();
+          break;
+        case 'pause':
+        case 'resume':
+        case 'restore-review':
+          result = records.manageMaintenance(message.command, message.target ?? 'all', {source:message.source, reason:message.reason, handling:message.handling, externalResults:message.externalResults, backupPoint:message.backupPoint});
+          if (message.command === 'resume') dispatch();
+          break;
         case 'submit':
+          if (records.maintenance().admissionPaused) throw Error('Admission is paused');
           if (!message.submission || !Object.hasOwn(message.submission, 'input')) throw new Error('Missing input');
           for (const field of ['repo', 'capability', 'source']) {
             if (typeof message.submission[field] !== 'string' || !message.submission[field]) throw new Error(`Invalid ${field}`);
@@ -95,7 +107,7 @@ export async function serve(data: string, configPath: string) {
           }
           const submitted = await records.submit(message.submission as Submission, config);
           result = submitted.receipt;
-          dispatch(submitted.newExecutionId);
+          dispatch();
           break;
         case 'cleanup':
           result = records.cleanup(data);
@@ -170,7 +182,7 @@ export async function serve(data: string, configPath: string) {
           }
           const audit = {source:message.source,handling:message.handling,reason:message.reason,externalResults:message.externalResults};
           result = message.command === 'confirm-stop' ? records.confirmStop(message.id,audit,message.call,message.attempt) : records.recover(message.id,audit,message.command==='retry');
-          dispatch(message.command === 'retry' ? String(result.execution!.id) : undefined);
+          dispatch();
           break;
         }
         case 'show':

@@ -18,6 +18,7 @@ export class Records {
     this.db = new DatabaseSync(path);
     this.db.exec(`
       PRAGMA foreign_keys = ON;
+      CREATE TABLE IF NOT EXISTS maintenance (id INTEGER PRIMARY KEY CHECK (id = 1), facts TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS requests (
         id TEXT PRIMARY KEY, repo TEXT NOT NULL, capability TEXT NOT NULL,
         input TEXT NOT NULL, source TEXT NOT NULL, created_at TEXT NOT NULL,
@@ -32,6 +33,9 @@ export class Records {
         id TEXT PRIMARY KEY, request_id TEXT NOT NULL UNIQUE REFERENCES requests(id),
         status TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS execution_start_authorizations (
+        execution_id TEXT PRIMARY KEY REFERENCES executions(id)
+      );
       CREATE TABLE IF NOT EXISTS execution_management (
         execution_id TEXT PRIMARY KEY REFERENCES executions(id), facts TEXT NOT NULL
       );
@@ -44,6 +48,65 @@ export class Records {
       );
     `);
     for (const row of this.db.prepare("SELECT id FROM attempts WHERE run_state IN ('starting', 'running')").all()) this.priorAttempts.add(String(row.id));
+  }
+
+  canStart(id: string) {
+    return !!this.db.prepare('SELECT execution_id FROM execution_start_authorizations WHERE execution_id = ?').get(id);
+  }
+
+  maintenance(): { admissionPaused: boolean; startsPaused: boolean; restorePending?: boolean; restoreReview?: Record<string, string>; history: Record<string, string>[] } {
+    const row = this.db.prepare('SELECT facts FROM maintenance WHERE id = 1').get();
+    return row ? JSON.parse(String(row.facts)) : { admissionPaused: false, startsPaused: false, history: [] };
+  }
+
+  manageMaintenance(command: string, target: string, audit: Record<string, unknown>) {
+    if (!['pause', 'resume', 'restore-review'].includes(command)) throw Error('Invalid maintenance command');
+    for (const field of ['source', 'reason']) if (typeof audit[field] !== 'string' || !audit[field].trim()) throw Error(`Missing ${field}`);
+    if (!['all', 'admission', 'starts'].includes(target)) throw Error('Invalid maintenance target');
+    const state = this.maintenance();
+    const entry = { command, target, at: new Date().toISOString() } as Record<string, string>;
+    for (const field of ['source', 'reason', 'handling', 'externalResults', 'backupPoint']) {
+      if (audit[field] !== undefined) {
+        if (typeof audit[field] !== 'string' || !audit[field].trim()) throw Error(`Invalid ${field}`);
+        entry[field] = audit[field];
+      }
+    }
+    if (command === 'restore-review') {
+      for (const field of ['backupPoint', 'handling', 'externalResults']) if (!entry[field]) throw Error(`Missing ${field}`);
+      if (!state.startsPaused || !state.admissionPaused) throw Error('Pause admission and starts before restore review');
+      state.restoreReview = entry;
+    } else {
+      if (command === 'resume' && state.restorePending && !state.restoreReview) throw Error('Restore review required before resume');
+      const paused = command === 'pause';
+      if (target !== 'starts') state.admissionPaused = paused;
+      if (target !== 'admission') state.startsPaused = paused;
+    }
+    state.history.push(entry);
+    this.saveMaintenance(state);
+    return state;
+  }
+
+  private saveMaintenance(state: ReturnType<Records['maintenance']>) {
+    this.db.prepare('INSERT INTO maintenance VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET facts = excluded.facts').run(JSON.stringify(state));
+  }
+
+  startMaintenance(mode: string) {
+    if (!['normal', 'paused', 'restore'].includes(mode)) throw Error('Invalid startup maintenance mode');
+    if (mode === 'normal') return;
+    const state = this.maintenance();
+    state.admissionPaused = true;
+    state.startsPaused = true;
+    if (mode === 'restore') {
+      state.restorePending = true;
+      delete state.restoreReview;
+    }
+    state.history.push({command:'pause', target:'all', source:'startup', at:new Date().toISOString(), reason:mode === 'restore' ? 'Restored backup requires external side-effect review' : 'Paused service startup'});
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      if (mode === 'restore') this.db.exec('DELETE FROM execution_start_authorizations');
+      this.saveMaintenance(state);
+      this.db.exec('COMMIT');
+    } catch (error) { this.db.exec('ROLLBACK'); throw error; }
   }
 
   private existing(submission: Submission, originalInput: string) {
@@ -71,6 +134,7 @@ export class Records {
     } catch (error) {
       rejection = error instanceof Error ? error.message : 'Invalid input';
     }
+    if (this.maintenance().admissionPaused) throw Error('Admission is paused');
     const requestId = randomUUID();
     const executionId = randomUUID();
     this.db.exec('BEGIN IMMEDIATE');
@@ -81,7 +145,13 @@ export class Records {
         requestId, submission.repo, submission.capability, originalInput,
         submission.source, new Date().toISOString(), rejection,
       );
-      if (rejection === null) this.db.prepare('INSERT INTO executions VALUES (?, ?, ?)').run(executionId, requestId, 'queued');
+      if (rejection === null) {
+        this.db.prepare('INSERT INTO executions VALUES (?, ?, ?)').run(executionId, requestId, 'queued');
+        const capability = config.capabilities.find(capability => capability.id === submission.capability);
+        if (capability?.execution && config.environments.find(environment => environment.id === capability.environment)?.docker) {
+          this.db.prepare('INSERT INTO execution_start_authorizations VALUES (?)').run(executionId);
+        }
+      }
       this.db.prepare('INSERT INTO submission_metadata VALUES (?, ?, ?)').run(requestId, submission.scheduledAt ?? null, submission.deduplicationKey ?? null);
       if (rejection === null && submission.deduplicationKey !== undefined) {
         this.db.prepare('INSERT INTO deduplication_keys VALUES (?, ?, ?)').run(submission.source, submission.deduplicationKey, requestId);
@@ -215,6 +285,7 @@ export class Records {
       }
       this.saveManagement(String(detail.execution.id), {cancellation:null, fixedSha:actualSha ?? this.management(String(detail.execution.id)).fixedSha, reconciliation});
       this.db.prepare('UPDATE executions SET status = ? WHERE id = ?').run(retry?'queued':'resolved',String(detail.execution.id));
+      if (retry) this.db.prepare('INSERT OR IGNORE INTO execution_start_authorizations VALUES (?)').run(String(detail.execution.id));
       this.db.exec('COMMIT');
     } catch(error) {this.db.exec('ROLLBACK');throw error;}
     if(attempt){this.priorAttempts.delete(String(attempt.id));this.unresolved.delete(String(attempt.id));}
@@ -234,6 +305,7 @@ export class Records {
       this.db.prepare('INSERT INTO attempts VALUES (?, ?, ?, ?, ?, ?, ?)').run(id, executionId, version, capability, environment, 'starting', JSON.stringify({ ...facts, createdAt, ...(deadlineAt ? {deadlineAt} : {}), selectedSha }));
       this.saveManagement(executionId,{fixedSha:selectedSha});
       this.db.prepare("UPDATE executions SET status = 'starting' WHERE id = ?").run(executionId);
+      this.db.prepare('DELETE FROM execution_start_authorizations WHERE execution_id = ?').run(executionId);
       this.db.exec('COMMIT');
       this.liveAttempts.add(id);
       return id;

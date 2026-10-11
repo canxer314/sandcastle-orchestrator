@@ -7,6 +7,125 @@ import { DatabaseSync } from 'node:sqlite';
 import { afterEach, expect, test } from 'vitest';
 import { call } from '../src/control.js';
 
+test('pause starts lets existing agents finish but holds queued agents until explicit resume', async () => {
+  const f = await fixture(1);
+  const first = await f.submit('alpha', 'first');
+  await call(f.socket, {command:'pause',target:'starts',source:'operator',reason:'maintenance'});
+  const queued = await f.submit('beta', 'queued');
+  await f.release('first');
+  await expect.poll(async () => (await f.show(first)).execution.status).toBe('completed');
+  expect((await f.show(queued)).execution.status).toBe('queued');
+  await call(f.socket, {command:'resume',target:'starts',source:'operator',reason:'checked'});
+  await expect.poll(async () => (await f.show(queued)).execution.status).toBe('starting');
+  await f.release('queued');
+  await expect.poll(async () => (await f.show(queued)).execution.status, {timeout:10000}).toBe('completed');
+}, 20000);
+
+test('paused deterministic submission starts on explicit resume', async () => {
+  const f = await fixture();
+  await call(f.socket, {command:'pause',target:'starts',source:'operator',reason:'maintenance'});
+  const id = await f.submit('alpha', 'paused', 'deterministic');
+  expect((await f.show(id)).execution.status).toBe('queued');
+  await call(f.socket, {command:'resume',target:'starts',source:'operator',reason:'checked'});
+  await expect.poll(async () => (await f.show(id)).execution.status).toBe('completed');
+}, 20000);
+
+test('paused deterministic submit and retry survive restart without starting historical queue', async () => {
+  const f = await fixture();
+  await call(f.socket, {command:'pause',target:'starts',source:'operator',reason:'maintenance'});
+  const historical = await f.submit('alpha', 'historical', 'deterministic');
+  const pending = await f.submit('beta', 'pending', 'deterministic');
+  const retry = await f.submit('alpha', 'retry', 'deterministic');
+  await call(f.socket, {command:'cancel',id:retry,reason:'retry explicitly after review'});
+  await call(f.socket, {command:'retry',id:retry,source:'operator',handling:'retry original request',reason:'checked',externalResults:'no attempt or writes'});
+  expect((await f.show(retry)).execution.status).toBe('queued');
+  await stop(f.child);
+  // Simulate the pre-authorization format: historical queue has no start grant.
+  const db = new DatabaseSync(join(f.data, 'records.sqlite'));
+  db.prepare('DELETE FROM execution_start_authorizations WHERE execution_id = ?').run(historical);
+  db.close();
+  const restarted = await start(f.config, f.data);
+  const show = async (id: string) => await call(restarted.socket, {command:'show',id}) as any;
+  expect((await show(pending)).execution.status).toBe('queued');
+  expect((await show(retry)).execution.status).toBe('queued');
+  await call(restarted.socket, {command:'resume',target:'starts',source:'operator',reason:'checked'});
+  await expect.poll(async () => (await show(pending)).execution.status).toBe('completed');
+  await expect.poll(async () => (await show(retry)).execution.status).toBe('completed');
+  expect((await show(historical)).execution.status).toBe('queued');
+  expect((await show(historical)).attempts).toEqual([]);
+  await stop(restarted.child);
+  const normal = await start(f.config, f.data);
+  expect((await call(normal.socket, {command:'show',id:historical}) as any).execution.status).toBe('queued');
+  expect((await call(normal.socket, {command:'show',id:retry}) as any).attempts).toHaveLength(1);
+}, 20000);
+
+test('restore discards pre-backup deterministic start grants until an explicit retry', async () => {
+  const f = await fixture();
+  await call(f.socket, {command:'pause',target:'starts',source:'operator',reason:'backup'});
+  const stale = await f.submit('alpha', 'stale', 'deterministic');
+  await stop(f.child);
+  const restored = await start(f.config, f.data, 'restore');
+  await call(restored.socket, {command:'restore-review',source:'operator',reason:'compared external audit',backupPoint:'backup',handling:'keep stale queue held',externalResults:'no external writes'});
+  await call(restored.socket, {command:'resume',source:'operator',reason:'reviewed'});
+  const fresh = await f.submit('beta', 'fresh', 'deterministic');
+  await expect.poll(async () => (await f.show(fresh)).execution.status).toBe('completed');
+  expect((await f.show(stale)).execution.status).toBe('queued');
+  expect((await f.show(stale)).attempts).toEqual([]);
+  await call(restored.socket, {command:'cancel',id:stale,reason:'explicitly reconsider stale request'});
+  await call(restored.socket, {command:'retry',id:stale,source:'operator',reason:'checked again',handling:'execute original request',externalResults:'no previous attempt or writes'});
+  await expect.poll(async () => (await f.show(stale)).execution.status).toBe('completed');
+}, 20000);
+
+test('failed start authorization save rejects admission and rolls back retry', async () => {
+  const f = await fixture();
+  await call(f.socket, {command:'pause',target:'starts',source:'operator',reason:'maintenance'});
+  const retry = await f.submit('alpha', 'retry', 'deterministic');
+  await call(f.socket, {command:'cancel',id:retry,reason:'review'});
+  const before = await f.show(retry);
+  const db = new DatabaseSync(join(f.data, 'records.sqlite'));
+  db.exec("CREATE TRIGGER no_authorization BEFORE INSERT ON execution_start_authorizations BEGIN SELECT RAISE(FAIL, 'authorization blocked'); END;");
+  await expect(f.submit('beta', 'failed', 'deterministic')).rejects.toThrow('authorization blocked');
+  expect(await call(f.socket, {command:'list'})).toEqual([before]);
+  await expect(call(f.socket, {command:'retry',id:retry,source:'operator',reason:'checked',handling:'retry',externalResults:'no writes'})).rejects.toThrow('authorization blocked');
+  expect(await f.show(retry)).toEqual(before);
+  db.exec('DROP TRIGGER no_authorization'); db.close();
+  await call(f.socket, {command:'retry',id:retry,source:'operator',reason:'checked',handling:'retry',externalResults:'no writes'});
+  await call(f.socket, {command:'resume',source:'operator',reason:'checked'});
+  await expect.poll(async () => (await f.show(retry)).execution.status).toBe('completed');
+}, 20000);
+
+test('external SQLite and tar restore preserves records config logs and artifacts before reviewed resume', async () => {
+  const f = await fixture(1);
+  const completed = await f.submit('alpha', 'saved'); await f.release('saved');
+  await expect.poll(async () => (await f.show(completed)).execution.status).toBe('completed');
+  await call(f.socket,{command:'pause',target:'starts',source:'operator',reason:'backup window'});
+  const queued = await f.submit('beta','stale');
+  await call(f.socket,{command:'pause',target:'all',source:'operator',reason:'consistent offline backup'});
+  const backup = await temporary(); const restored = await temporary(); const restoredConfig = await temporary();
+  const exited = once(f.child,'exit'); f.child.kill('SIGTERM'); await exited;
+  const backupPoint = new Date().toISOString();
+  execFileSync('sqlite3',[join(f.data,'records.sqlite'),`.backup '${join(backup,'records.sqlite')}'`]);
+  expect(execFileSync('sqlite3',[join(backup,'records.sqlite'),'PRAGMA integrity_check;'],{encoding:'utf8'}).trim()).toBe('ok');
+  execFileSync('tar',['--exclude=control.sock','--exclude=control.lock','--exclude=records.sqlite','-C',f.data,'-cpf',join(backup,'evidence.tar'),'.']);
+  execFileSync('tar',['-C',resolve(f.config,'..'),'-cpf',join(backup,'config.tar'),'.']);
+  const began = performance.now();
+  execFileSync('cp',[join(backup,'records.sqlite'),join(restored,'records.sqlite')]);
+  execFileSync('tar',['-C',restored,'-xpf',join(backup,'evidence.tar')]);
+  execFileSync('tar',['-C',restoredConfig,'-xpf',join(backup,'config.tar')]);
+  const service = await start(join(restoredConfig,'config.ts'),restored,'restore');
+  const saved = await call(service.socket,{command:'show',id:completed}) as any;
+  expect(saved.execution.status).toBe('completed');
+  const artifact = await call(service.socket,{command:'artifact',id:completed,name:'report.txt'}) as any;
+  expect(JSON.parse(Buffer.from(artifact.content,'base64').toString())).toEqual({summary:'done'});
+  expect((await call(service.socket,{command:'logs',id:completed}) as any).availability).toBe('available');
+  expect((await call(service.socket,{command:'show',id:queued}) as any).execution.status).toBe('queued');
+  await expect(call(service.socket,{command:'resume',source:'operator',reason:'premature'})).rejects.toThrow('Restore review required');
+  await call(service.socket,{command:'cancel',id:queued,reason:'backup queue no longer desired'});
+  await call(service.socket,{command:'restore-review',source:'operator',reason:'controlled host audit compared',backupPoint,handling:'cancelled stale queue',externalResults:'controlled fixture: no remote writes or model calls; saved execution ended before backup'});
+  await call(service.socket,{command:'resume',source:'operator',reason:'review complete'});
+  console.log(JSON.stringify({drill:'issue-27',frequency:'manual on demand; before each controlled upgrade, no production timer',backupPoint,restoreMilliseconds:Math.round(performance.now()-began),intervention:'operator paused, waited, restored, inspected evidence, cancelled stale queue, recorded audit, resumed'}));
+}, 30000);
+
 const root = resolve(import.meta.dirname, '..');
 const directories: string[] = [];
 const children: ChildProcess[] = [];
@@ -15,8 +134,8 @@ async function temporary() {
   directories.push(directory);
   return directory;
 }
-async function start(config: string, data: string) {
-  const child = spawn(process.execPath, ['--import', 'tsx', 'src/cli.ts', 'serve', '--config', config, '--data', data], { cwd: root });
+async function start(config: string, data: string, maintenance?: string) {
+  const child = spawn(process.execPath, ['--import', 'tsx', 'src/cli.ts', 'serve', '--config', config, '--data', data, ...(maintenance ? ['--maintenance', maintenance] : [])], { cwd: root });
   children.push(child);
   await new Promise<void>((resolve, reject) => {
     let output = ''; let errors = '';

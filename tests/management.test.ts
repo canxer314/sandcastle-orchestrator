@@ -1,10 +1,67 @@
 import { request } from 'node:http';
+import { DatabaseSync } from 'node:sqlite';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { mkdtemp, mkdir, writeFile, rm, chmod, stat, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { once } from 'node:events';
 import { afterEach, expect, test } from 'vitest';
+
+test('maintenance pause survives restart and requires explicit resume', async () => {
+  const f = await fixture(); const child = await start(f);
+  const paused = await cli(['pause', '--socket', f.socket, '--target', 'all', '--source', 'operator', '--reason', 'backup window']);
+  expect(paused.code, paused.stderr).toBe(0);
+  expect(JSON.parse(paused.stdout)).toMatchObject({ admissionPaused: true, startsPaused: true });
+  const rejected = await cli(['submit', '--socket', f.socket, '--repo', 'alpha', '--capability', 'test-commit', '--input', '"sha"', '--source', 'manual']);
+  expect(rejected.code).toBe(1);
+  expect((await socketCall(f.socket, { command: 'list' })).body).toEqual([]);
+  await stop(child); await start(f);
+  expect((await socketCall(f.socket, { command: 'maintenance' })).body).toMatchObject({ admissionPaused: true, startsPaused: true });
+  expect((await cli(['resume', '--socket', f.socket, '--source', 'operator', '--reason', 'checks passed'])).code).toBe(0);
+  expect((await socketCall(f.socket, { command: 'maintenance' })).body).toMatchObject({ admissionPaused: false, startsPaused: false });
+});
+
+test('restore startup requires persisted side-effect review before explicit resume', async () => {
+  const f = await fixture(); const child = await start(f, 'restore');
+  expect((await socketCall(f.socket, {command:'maintenance'})).body).toMatchObject({admissionPaused:true,startsPaused:true,restorePending:true});
+  expect((await socketCall(f.socket, {command:'resume',source:'operator',reason:'too soon'})).status).toBe(400);
+  expect((await socketCall(f.socket, {command:'restore-review',source:'operator',reason:'checked'})).status).toBe(400);
+  const reviewed = await cli(['restore-review','--socket',f.socket,'--source','operator','--reason','compared host audit','--backup-point','2026-10-11T00:00:00Z','--handling','cancel stale queue','--external-results','no outstanding writes; checked host audit']);
+  expect(reviewed.code,reviewed.stderr).toBe(0);
+  expect((await socketCall(f.socket, {command:'maintenance'})).body.startsPaused).toBe(true);
+  await stop(child); await start(f);
+  expect((await socketCall(f.socket, {command:'maintenance'})).body.restoreReview.externalResults).toBe('no outstanding writes; checked host audit');
+  expect((await cli(['resume','--socket',f.socket,'--source','operator','--reason','review accepted'])).code).toBe(0);
+});
+
+test('repeated restore atomically replaces the old review with a fresh resume gate and audit', async () => {
+  const f = await fixture();
+  const child = await start(f, 'restore');
+  await socketCall(f.socket, {command:'restore-review',source:'operator',reason:'checked',backupPoint:'first backup',handling:'checked queue',externalResults:'no writes'});
+  await socketCall(f.socket, {command:'resume',source:'operator',reason:'review accepted'});
+  const before = (await socketCall(f.socket, {command:'maintenance'})).body;
+  await stop(child);
+  const db = new DatabaseSync(join(f.dir, 'records.sqlite'));
+  // A storage boundary constraint refuses any intermediate restore snapshot.
+  db.exec(`CREATE TRIGGER complete_restore BEFORE UPDATE ON maintenance
+    WHEN json_extract(NEW.facts, '$.restoreReview') IS NOT NULL
+      OR json_extract(NEW.facts, '$.restorePending') IS NOT 1
+      OR json_extract(NEW.facts, '$.admissionPaused') IS NOT 1
+      OR json_extract(NEW.facts, '$.startsPaused') IS NOT 1
+    BEGIN SELECT RAISE(FAIL, 'incomplete restore snapshot'); END;`);
+  db.close();
+  const restored = await start(f, 'restore');
+  const state = (await socketCall(f.socket, {command:'maintenance'})).body;
+  expect(state).toMatchObject({admissionPaused:true,startsPaused:true,restorePending:true});
+  expect(state.restoreReview).toBeUndefined();
+  expect(state.history).toHaveLength(before.history.length + 1);
+  expect(state.history.at(-1)).toMatchObject({command:'pause',target:'all',source:'startup',reason:'Restored backup requires external side-effect review'});
+  expect((await socketCall(f.socket, {command:'resume',source:'operator',reason:'old review cannot authorize this restore'})).status).toBe(400);
+  await stop(restored);
+  await start(f);
+  expect((await socketCall(f.socket, {command:'maintenance'})).body).toEqual(state);
+  expect((await socketCall(f.socket, {command:'resume',target:'admission',source:'operator',reason:'still needs fresh review'})).status).toBe(400);
+});
 
 const root = resolve(import.meta.dirname, '..');
 const children = new Set<ChildProcess>();
@@ -57,8 +114,8 @@ async function fixture() {
   return { dir, config, socket: join(dir, 'control.sock') };
 }
 
-async function start(f: Awaited<ReturnType<typeof fixture>>) {
-  const child = spawn(process.execPath, ['--import', 'tsx', 'src/cli.ts', 'serve', '--data', f.dir, '--config', f.config], { cwd: root });
+async function start(f: Awaited<ReturnType<typeof fixture>>, maintenance?: string) {
+  const child = spawn(process.execPath, ['--import', 'tsx', 'src/cli.ts', 'serve', '--data', f.dir, '--config', f.config, ...(maintenance ? ['--maintenance', maintenance] : [])], { cwd: root });
   children.add(child);
   let output = '';
   let errors = '';
