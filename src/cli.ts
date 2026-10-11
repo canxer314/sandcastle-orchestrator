@@ -21,7 +21,7 @@ try {
     const message = command === 'submit'
       ? { command, submission: { repo: required('repo'), capability: required('capability'), input: JSON.parse(required('input')), source: required('source'), deduplicationKey: values['deduplication-key'], scheduledAt: values['scheduled-at'] } }
       : command === 'list' ? { command, repo: values.repo, status: values.status, source: values.source }
-      : { command, id: positionals[1], attempt: values.attempt, ...(['logs','artifact'].includes(command) && values.call !== undefined ? {call:values.call} : {}), ...(['cancel','confirm-stop','resolve','retry'].includes(command) ? {reason:required('reason'), source:values.source, handling:values.handling, externalResults:values['external-results']} : {}), ...(command === 'artifact' ? { name: required('name') } : {}) };
+      : { command, id: positionals[1], attempt: values.attempt, ...(['logs','artifact','confirm-stop'].includes(command) && values.call !== undefined ? {call:values.call} : {}), ...(['cancel','confirm-stop','resolve','retry'].includes(command) ? {reason:required('reason'), source:values.source, handling:values.handling, externalResults:values['external-results']} : {}), ...(command === 'artifact' ? { name: required('name') } : {}) };
     console.log(JSON.stringify(await call(socket, message)));
   }
 } catch (error) {

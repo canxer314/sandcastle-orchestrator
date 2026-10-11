@@ -125,14 +125,14 @@ export async function serve(data: string, configPath: string) {
         case 'retry': {
           for (const field of ['source','handling','reason']) if (typeof message[field] !== 'string' || !message[field].trim()) throw Error(`Missing ${field}`);
           const detail = records.show(message.id);
-          if (message.attempt && message.attempt !== detail.attempts.at(-1)?.id) throw Error('Only the current attempt can be managed');
+          if (message.attempt && message.attempt !== detail.attempts.at(-1)?.id && !(message.command === 'confirm-stop' && message.call !== undefined)) throw Error('Only the current attempt can be managed');
           if(message.command==='retry') {
             const capability = config.capabilities.find(c=>c.id===detail.request.capability);
             const roleBinding = config.roleBindings?.find(b=>b.role===detail.request.capability);
             if(!config.repos.some(r=>r.id===detail.request.repo) || (!roleBinding && (!capability?.execution || !config.environments.find(e=>e.id===capability.environment)?.docker))) throw Error('Current configuration cannot execute this request');
           }
           const audit = {source:message.source,handling:message.handling,reason:message.reason,externalResults:message.externalResults};
-          result = message.command === 'confirm-stop' ? records.confirmStop(message.id,audit) : records.recover(message.id,audit,message.command==='retry');
+          result = message.command === 'confirm-stop' ? records.confirmStop(message.id,audit,message.call,message.attempt) : records.recover(message.id,audit,message.command==='retry');
           if(message.command==='retry') void (config.roles?.some(r=>r.id===detail.request.capability) ? executeRole(records,config,String(result.execution!.id),data) : execute(records,config,String(result.execution!.id),data)).catch(error=>console.error(JSON.stringify({error:String(error)})));
           break;
         }
