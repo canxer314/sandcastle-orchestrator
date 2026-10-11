@@ -82,6 +82,26 @@ test('submission waits for asynchronous input rejection before saving a receipt'
   expect(JSON.parse(listed.stdout)).toEqual([]);
 });
 
+test.each(['sync', 'async'])('an empty %s validation error rejects the request across service restart', async mode => {
+  const f = await fixture();
+  await writeFile(f.config, `export default { version:'v1', repos:[{id:'alpha',location:'/test/alpha'}], environments:[{id:'test'}], capabilities:[{
+    id:'test-commit', environment:'test', ${mode === 'async' ? 'async ' : ''}validate() { throw new Error(''); }, run() {}
+  }] };`);
+  const service = await start(f);
+  const result = await cli(['submit', '--socket', f.socket, '--repo', 'alpha', '--capability', 'test-commit', '--input', '42', '--source', 'manual']);
+  expect(result.code, result.stderr).toBe(0);
+  const receipt = JSON.parse(result.stdout);
+  expect(receipt).toMatchObject({ accepted: false, reason: '' });
+  expect(receipt.executionId).toBeUndefined();
+  await stop(service);
+  await start(f);
+  const detail = await cli(['show', receipt.requestId, '--socket', f.socket]);
+  expect(detail.code, detail.stderr).toBe(0);
+  expect(JSON.parse(detail.stdout)).toMatchObject({ request: { input: 42, rejection: '' }, execution: null });
+  const listed = await cli(['list', '--socket', f.socket]);
+  expect(JSON.parse(listed.stdout)).toEqual([]);
+});
+
 test('configuration file symlinks also protect the actual configuration directory', async () => {
   const f = await fixture();
   const link = join(f.dir, 'config-link.ts');
@@ -159,6 +179,23 @@ test('a transaction failure returns no receipt and does not retain a partial req
   expect(JSON.parse(listed.stdout)).toEqual([]);
   const accepted = await cli(['submit', '--socket', f.socket, '--repo', 'alpha', '--capability', 'test-commit', '--input', '"sha"', '--source', 'manual']);
   expect(JSON.parse(accepted.stdout).accepted).toBe(true);
+});
+
+test('a failed rejection save returns no receipt and can be retried after storage recovers', async () => {
+  const f = await fixture();
+  await start(f);
+  await chmod(f.dir, 0o500);
+  try {
+    const failed = await cli(['submit', '--socket', f.socket, '--repo', 'alpha', '--capability', 'test-commit', '--input', '42', '--source', 'manual']);
+    expect(failed.code).toBe(1);
+    expect(failed.stdout).toBe('');
+  } finally { await chmod(f.dir, 0o700); }
+  const rejected = await cli(['submit', '--socket', f.socket, '--repo', 'alpha', '--capability', 'test-commit', '--input', '42', '--source', 'manual']);
+  expect(rejected.code, rejected.stderr).toBe(0);
+  const receipt = JSON.parse(rejected.stdout);
+  expect(receipt).toMatchObject({ accepted: false, reason: 'Expected commit text' });
+  const detail = await cli(['show', receipt.requestId, '--socket', f.socket]);
+  expect(JSON.parse(detail.stdout)).toMatchObject({ request: { input: 42, rejection: 'Expected commit text' }, execution: null });
 });
 
 test('runtime files and socket are private even in an existing permissive data directory', async () => {
