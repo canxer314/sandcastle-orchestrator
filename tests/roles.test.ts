@@ -41,7 +41,7 @@ test.each(['valid','invalid','missing-exit','cancelled','save-failure','secret-s
   if(capture){
     const calls=await readFile(join(bin,'calls'),'utf8');expect(calls).toContain(`exec -i ${detail.attempts[0].container} cat -- /home/agent/session`);expect(calls).not.toMatch(/^cp /m);
     expect(detail.attempts[0]).toMatchObject({exitCode:0,contract:'valid',business:{summary:'controlled report'}});
-    if(mode==='session'){expect(detail.attempts[0].error).toBeUndefined();expect(detail.attempts[0].iterations[0]).toMatchObject({sessionId:'controlled-session',sessionFilePath:join(detail.attempts[0].workspace,'captured-session')});expect(await readFile(detail.attempts[0].iterations[0].sessionFilePath)).toEqual(session);}
+    if(mode==='session'){expect(detail.attempts[0].error).toBeUndefined();expect(detail.attempts[0].iterations[0]).toMatchObject({sessionId:'controlled-session',sessionFilePath:join(detail.attempts[0].workspace,'captured-session')});expect((await readFile(detail.attempts[0].iterations[0].sessionFilePath)).equals(session)).toBe(true);}
     else expect(detail.attempts[0]).toMatchObject({error:'Agent execution or SDK postprocessing failed',iterations:[{sessionId:'controlled-session'}]});
     return;
   }
