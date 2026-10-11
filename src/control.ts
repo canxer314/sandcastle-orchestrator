@@ -61,6 +61,9 @@ export async function serve(data: string, configPath: string) {
             void (config.roles?.some(r=>r.id===message.submission.capability) ? executeRole(records,config,executionId,data) : execute(records, config, executionId, data)).catch(error => executionFailed(executionId, error));
           }
           break;
+        case 'cleanup':
+          result = records.cleanup(data);
+          break;
         case 'list':
           result = records.list(message.repo, message.status, message.source);
           break;
@@ -70,6 +73,13 @@ export async function serve(data: string, configPath: string) {
           const attempt = detail.attempts.find(a => a.id === message.attempt) ?? (message.attempt ? undefined : detail.attempts.at(-1));
           if (!attempt) throw Error('Attempt not found');
           const directory = join(data, 'attempts', String(attempt.id));
+          if (message.command === 'artifact' && !attempt.artifacts?.some((a: {name:string}) => a.name === message.name)) throw Error('Artifact not registered');
+          if (attempt.cleanup) {
+            result = message.command === 'logs'
+              ? {attemptId:attempt.id,actualSha:attempt.actualSha,availability:attempt.cleanup.status,cleanup:attempt.cleanup,stdout:null,stderr:null,truncated:{stdout:false,stderr:false},complete:false}
+              : {attemptId:attempt.id,actualSha:attempt.actualSha,name:message.name,availability:attempt.cleanup.status,cleanup:attempt.cleanup,encoding:'base64',content:null};
+            break;
+          }
           if (message.command === 'logs') {
             const read = async (stream: string) => {
               try {
@@ -83,11 +93,19 @@ export async function serve(data: string, configPath: string) {
               } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null; throw error; }
             };
             const stdout = await read('stdout'); const stderr = await read('stderr');
-            result = {attemptId:attempt.id,actualSha:attempt.actualSha,stdout:stdout?.text??null,stderr:stderr?.text??null,truncated:{stdout:stdout?.truncated??false,stderr:stderr?.truncated??false},complete:attempt.logs?.complete === true && stdout !== null && stderr !== null};
+            result = {attemptId:attempt.id,actualSha:attempt.actualSha,availability:stdout !== null && stderr !== null ? 'available' : 'unavailable',stdout:stdout?.text??null,stderr:stderr?.text??null,truncated:{stdout:stdout?.truncated??false,stderr:stderr?.truncated??false},complete:attempt.logs?.complete === true && stdout !== null && stderr !== null};
           } else {
-            if (!attempt.artifacts?.some((a: {name:string}) => a.name === message.name)) throw Error('Artifact not registered');
-            result = {attemptId:attempt.id,actualSha:attempt.actualSha,name:message.name,encoding:'base64',content:await readArtifact(join(directory,'artifacts'),message.name)};
+            let content: string | null;
+            try { content = await readArtifact(join(directory,'artifacts'),message.name); }
+            catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; content = null; }
+            result = {attemptId:attempt.id,actualSha:attempt.actualSha,name:message.name,availability:content === null ? 'unavailable' : 'available',encoding:'base64',content};
           }
+          // File reads yield to other management requests; do not return stale completeness
+          // if cleanup removed evidence while the descriptor was open.
+          const current = records.show(message.id).attempts.find(a => a.id === attempt.id);
+          if (current?.cleanup) result = message.command === 'logs'
+            ? {attemptId:attempt.id,actualSha:attempt.actualSha,availability:current.cleanup.status,cleanup:current.cleanup,stdout:null,stderr:null,truncated:{stdout:false,stderr:false},complete:false}
+            : {attemptId:attempt.id,actualSha:attempt.actualSha,name:message.name,availability:current.cleanup.status,cleanup:current.cleanup,encoding:'base64',content:null};
           break;
         }
         case 'cancel':
