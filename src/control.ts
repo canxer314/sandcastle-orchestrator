@@ -169,13 +169,8 @@ export async function serve(data: string, configPath: string) {
             if(!config.repos.some(r=>r.id===detail.request.repo) || (!roleBinding && (!capability?.execution || !config.environments.find(e=>e.id===capability.environment)?.docker))) throw Error('Current configuration cannot execute this request');
           }
           const audit = {source:message.source,handling:message.handling,reason:message.reason,externalResults:message.externalResults};
-<<<<<<< HEAD
           result = message.command === 'confirm-stop' ? records.confirmStop(message.id,audit,message.call,message.attempt) : records.recover(message.id,audit,message.command==='retry');
-          if(message.command==='retry') void (config.roles?.some(r=>r.id===detail.request.capability) ? executeRole(records,config,String(result.execution!.id),data) : execute(records,config,String(result.execution!.id),data)).catch(error=>executionFailed(String(detail.execution!.id), error));
-=======
-          result = message.command === 'confirm-stop' ? records.confirmStop(message.id,audit) : records.recover(message.id,audit,message.command==='retry');
           dispatch(message.command === 'retry' ? String(result.execution!.id) : undefined);
->>>>>>> 2e94d65 (feat: schedule primary agents with global and repo quotas (#21))
           break;
         }
         case 'show':
