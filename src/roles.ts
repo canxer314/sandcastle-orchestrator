@@ -81,8 +81,8 @@ export async function executeRole(records:Records, config:Configuration, executi
     }});
     const sandbox=await createSandbox({cwd:workspace,branch,baseBranch:sha,sandbox:sandboxProvider});
     const result=await runAgent(sandbox,provider.agent,prompt,()=>{if(deadlineTimer)clearTimeout(deadlineTimer)});
-    if(deadlineError)throw deadlineError;
     const facts={...result,endedAt:new Date().toISOString(),logs:{complete:result.exitCode!==null && !result.error},stopConfirmation:result.exitCode===null?undefined:{kind:'agent-exit-marker',confirmedAt:new Date().toISOString(),exitCode:result.exitCode}};
+    if(deadlineError){records.updateAttempt(attempt,{...facts,runState:'unknown',persistenceError:deadlineError instanceof Error?deadlineError.message:'Deadline intent save failed'});return;}
     if(result.exitCode===null){records.finishAttempt(attempt,'unknown',{...facts,error:result.error ?? 'Agent exit evidence unavailable'});return;}
     try {
       if(result.output===null)throw Error('No role output available');
