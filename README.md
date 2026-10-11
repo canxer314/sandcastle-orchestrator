@@ -84,6 +84,36 @@ pnpm start logs EXECUTION_ID --attempt ATTEMPT_ID --socket /srv/orchestrator-dat
 
 配置和 SQLite JSON 字段均为兼容性增加，原 CLI/socket 命令、旧记录及停止文件存在性检查保持有效。经恢复者核实并 resolve 的未决执行，其历史 `persistenceError` 保留为审计信息，不再单独阻止到期清理；未 resolve 的错误仍保护相关证据。回退到此前版本不会执行新增期限，需先停止服务并核查活跃尝试，再按下述备份回退流程处理。真实正常路径验收固定在 [issue #20 实测代码版本](docs/issue-20-real-acceptance.md)；退出证据保存失败（35e6219）及合并后的到期清理交互均由受控 CLI/socket 回归覆盖，未在该次真实运行中验证。#19 的真实运行记录不能替代该验收。
 
+## 已有 MCP 服务（#23）
+
+普通角色可选 `mcp: [{service, tools, requiredCapabilities?}]`，引用管理员 `mcpServices`。每个服务定义 `id`（字母数字、`_`、`-`）、原工具名称 `tools`、`access`（实际权限与网络限制）、`context: 'none' | 'code'`、`capabilities` 和 `prepare(context)`。`capabilities` 必须逐项描述 `context/directory/logs/longTasks/query/cancel/retry`，不可用填 `null`；角色要求的能力为 null 时，该尝试明确 `start_failed`，不启动 Agent。声明不替代实际工具发现，运行中工具缺失/服务不可用由原 provider 和角色报告如实反馈。
+
+`prepare({repo,actualSha,workspace,attemptId})` 是可信管理员代码，返回 `{configFile, binding?}`；`configFile` 为宿主绝对路径的普通原生 provider MCP JSON 文件，readonly 挂载到 `/orchestrator-mcp/SERVICE_ID.json`。不解析或转换传输、认证、参数或返回契约；文件中的服务必须已能从选定环境访问，stdio 命令与所需库必须部署在镜像内，HTTP/SSE 地址及认证沿用 provider 原生支持。管理员确保每份文件只含本角色获授权的服务及工具，不把工具引用当权限过滤器。
+
+`context: 'code'` 强制核对可信 `binding: {repo,actualSha,location}` 与本尝试 repo/SHA；`location` 记录服务实际访问目录或位置，而非默认当前 checkout。`prepare` 必须通过服务已有可信元数据、服务部署绑定或宿主 Git 核对真实版本及访问位置，不得把传入 SHA 原样回显当核验，更不得使用模型自报结果。服务无法提供可核验的 code binding 就明确失败；与代码无关的服务可用 `context: 'none'`，不得据此宣称它读到了本次代码。管理员负责核验后到使用期间绑定的稳定性（固定只读版本/独立目录），编排器不冻结外部服务状态。
+
+provider 可选 `configureMcp(agent, connections): AgentProvider`，`connections` 仅含服务 ID、容器配置路径和角色工具名。Sandcastle 0.12.0 的 `AgentProvider` / `ClaudeCodeOptions` 无 MCP 参数，故提供 `src/mcp.ts` 的 `configureClaudeMcp` 最薄适配：在原 `buildPrintCommand` 后附加 Claude Code 原生 `--strict-mcp-config --mcp-config FILE...`，保持 prompt stdin、parser、session 和原命令契约。其他 provider 由管理员按其既有配置方式提供同等适配，不回退为只有 Prompt 说明。没有 MCP 的旧角色不调用该 hook，保持原路径。
+
+```ts
+import { claudeCode } from '@ai-hero/sandcastle';
+import { configureClaudeMcp } from './src/mcp.js';
+// 普通配置中的增量，保留其他 repos/environments/roles/bindings：
+const providers = [{ id: 'claude', agent: claudeCode('your-authorized-model'), configureMcp: configureClaudeMcp }];
+const mcpServices = [{
+  id: 'existing', tools: ['inspect'], context: 'none' as const,
+  access: '管理员部署的只读服务；仅允许授权目标；网络由环境和服务限制',
+  capabilities: { context: null, directory: null, logs: null, longTasks: null, query: null, cancel: null, retry: '服务不重试' },
+  async prepare() { return { configFile: '/srv/admin-mcp/existing.json' }; },
+}];
+// 对应 role 添加 mcp: [{service:'existing',tools:['inspect']}]
+```
+
+凭据留在受限原生配置/服务环境中，不经 Prompt 或模型工具参数传递，编排器不主动保存 native config 内容、认证头、环境或 configFile 宿主路径。`show` 仅增量保存服务/工具 ID、明确公开的能力与权限说明、可信绑定；这些说明、binding、业务报告、日志和 session 不是秘密过滤器，管理员与服务不得输出凭据。挂载配置对容器进程可读，因此须使用专用最小权限凭据并信任镜像/provider；本实现不宣称秘密对容器内模型工具不可读。
+
+容器外 MCP 服务不继承只读容器隔离；服务及管理员落实目标目录、网络、身份与副作用限制，必要时显式配置环境网络。角色须区分业务结果、故障和未知，日志引用不可读时报告不可用，不把 URI 当已读证据。CLI exit marker 仅证明 Agent CLI 结束，不能证明 MCP 长任务停止。超时/断连后的外部结果及停止状态仍未知；取消只沿用 #19 协作请求，不加统一远端取消、自动恢复、重试或补偿。原服务重试和副作用幂等限制必须在 `capabilities.retry` 写明，人工 retry 仍先核对外部结果。
+
+验证：`tests/roles.test.ts` 经真实 CLI/socket、Sandcastle `claudeCode` 的真实 builder/parser、受控 CLI harness 和真实 stdio MCP `initialize → tools/list → tools/call`，验证反馈、不可读日志引用、不可用服务、运行时工具缺失、可信绑定不匹配与必需能力缺失。未知结果用例让受控服务实际收到 `tools/call` 后关闭 stdio，harness 按调用派发阶段将断连反馈为 `business.outcome: 'unknown'`、`remoteStopped: null`；CLI 正常结束仍为 completed，不混淆业务未知与进程生命周期未知。原 missing-exit 用例独立验证退出证据缺失时 attempt unknown；凭据未出现在 show/logs。harness 不是实际 Claude Code CLI，不调用模型、不运行真实容器、不外部写入。2026-10-11 已在授权环境完成真实 Claude CLI → CC-Switch → Codex OAuth 的只读 stdio MCP red/green，独立服务调用记录与模型反馈吻合，Docker 只读配置挂载已核实，详见[真实验收记录](docs/issue-23-real-acceptance.md)。默认测试不调用模型；显式验收脚本及未复跑的新增断言见该记录。HTTP/SSE、真实第三方服务、其他 provider 和真实远端取消/重试仍未验收。
+
 ## 取消与人工恢复
 
 重启不消费历史 queued 请求，也不重跑、重连或接管旧 starting/running 尝试。`show` 的 `location` 如实返回容器名；harness process identity 和 reconnect handle 不可得时为 `null`，不能据此声称已停止。
