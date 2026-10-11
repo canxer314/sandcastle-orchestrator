@@ -35,7 +35,9 @@ else if(args[0]==='exec'){const text=args.at(-1);if(text.includes('ORCH_EXIT_'))
 `,{mode:0o700});
   const evidence=join(configuration,'snapshot.json');await writeFile(evidence,JSON.stringify({version:'v1',collectedAt:'2026-10-10T12:00:00Z',pullRequests:[{repo:'owner/repo',number:3,url:'https://github.com/owner/repo/pull/3',updatedAt:'2026-10-10T11:00:00Z',headSha:sha,body:'missing input validation',reviews:[],diff:'code evidence',missing:['review threads'],truncated:false}]}));
   const config=join(configuration,'config.ts');await writeFile(config,`import {createPrSnapshotTool,createPrAnalysisRole} from ${JSON.stringify(join(root,'src/pr-analysis.ts'))}; export default {version:'config-v1',repos:[{id:'sample',location:${JSON.stringify(repo)}}],environments:[{id:'readonly',docker:{image:'controlled:image',binary:${JSON.stringify(docker)}}}],capabilities:[],tools:[${mode==='unicode'?`{id:'unicode',description:'Echo observed Unicode',async read(input){return input}},`:''}createPrSnapshotTool({path:${JSON.stringify(evidence)},repo:'owner/repo',pullRequests:[3]})],roles:[${mode==='unicode'?`{...createPrAnalysisRole({repo:'owner/repo',pullRequests:[3]}),tools:['pr-snapshot','unicode']}`:`createPrAnalysisRole({repo:'owner/repo',pullRequests:[3]})`}],providers:[{id:'controlled',agent:{name:'controlled',env:{},captureSessions:false,buildPrintCommand(){return {command:'controlled-agent'}},parseStreamLine(line){return [{type:'result',result:${mode==='unicode-preview'?"'Report: '+'a'.repeat(65522)+'中😀中文 END-OF-REPORT; source administrator snapshot, missing review threads'":"line"}}]}}}],roleBindings:[{role:'pr-analysis',provider:'controlled',environment:'readonly',commit(){return '${sha}'}}]}`);
-  const child=spawn(process.execPath,['--import','tsx','src/cli.ts','serve','--config',config,'--data',data],{cwd:root});
+  const clock=join(dir,'clock.mjs');const advanceClock=join(dir,'advance-clock');
+  await writeFile(clock,`import {existsSync} from 'node:fs';const now=Date.now;Date.now=()=>now()+(existsSync(${JSON.stringify(advanceClock)})?31*24*60*60*1000:0);`);
+  const child=spawn(process.execPath,['--import','tsx','--import',clock,'src/cli.ts','serve','--config',config,'--data',data],{cwd:root});
   try {
     await new Promise<void>((resolve,reject)=>{let out='';let err='';const timer=setTimeout(()=>reject(Error(err||'not ready')),10000);child.stdout.on('data',d=>{out+=d;if(out.includes('ready')){clearTimeout(timer);resolve();}});child.stderr.on('data',d=>err+=d);child.once('exit',()=>{clearTimeout(timer);reject(Error(err));});});
     if(mode==='tool-failure')await rm(evidence);
@@ -46,7 +48,7 @@ else if(args[0]==='exec'){const text=args.at(-1);if(text.includes('ORCH_EXIT_'))
       await expect.poll(async()=>(await call(socket,{command:'show',id:receipt.executionId}) as any).execution.status).toBe('running');
       await call(socket,{command:'cancel',id:receipt.executionId,reason:'operator'});
     }
-    await expect.poll(async()=>(await call(socket,{command:'show',id:receipt.executionId}) as any).execution.status,{timeout:10000}).toBe(mode==='large-cancelled'?'cancelled':['report-save-failure','business-save-failure'].includes(mode)?'unknown':'completed');
+    await expect.poll(async()=>(await call(socket,{command:'show',id:receipt.executionId}) as any).execution.status,{timeout:10000}).toBe(mode==='large-cancelled'?'cancelled':['save-failure','report-save-failure','business-save-failure'].includes(mode)?'unknown':'completed');
     const cli=(...args:string[])=>JSON.parse(execFileSync(process.execPath,['--import','tsx','src/cli.ts',...args,'--socket',socket],{cwd:root,encoding:'utf8',maxBuffer:2*1024*1024}));
     const detail=cli('show',receipt.executionId);
     if(mode==='unicode-preview') {
@@ -67,9 +69,22 @@ else if(args[0]==='exec'){const text=args.at(-1);if(text.includes('ORCH_EXIT_'))
       expect(detail.attempts[0].endedAt).toEqual(expect.any(String));expect(detail.attempts[0].contract).not.toBe('error');expect(detail.attempts[0].businessReference).toBeUndefined();
       if(mode==='report-save-failure')expect(detail.attempts[0].report).toMatchObject({missing:true,complete:false});return;
     }
-    if(['denied','tool-failure','save-failure'].includes(mode)) {
+    if(mode==='save-failure') {
+      expect(detail.attempts[0]).toMatchObject({runState:'unknown',exitCode:0,stopConfirmation:{kind:'agent-exit-marker',exitCode:0},actualSha:sha,toolObservationError:expect.stringContaining('could not be saved')});
+      expect(detail.attempts[0].business).toBeUndefined();expect(detail.attempts[0].businessReference).toBeUndefined();expect(detail.attempts[0].contract).toBeUndefined();
+      expect(detail.request.input).toEqual({sha,pullRequests:[3]});
+      const report=cli('artifact',receipt.executionId,'--name','report.txt');
+      expect(Buffer.from(report.content,'base64').toString()).toBe('Unable to collect authorized PR evidence');
+      await writeFile(advanceClock,'advance');
+      expect(cli('cleanup')).toEqual({attempts:[]});
+      expect(cli('artifact',receipt.executionId,'--name','report.txt').content).toBe(report.content);
+      expect(cli('logs',receipt.executionId).stdout).toContain('Unable to collect authorized PR evidence');
+      await call(socket,{command:'cancel',id:receipt.executionId,reason:'operator review'});
+      expect(cli('show',receipt.executionId).execution.status).toBe('unknown');
+      expect(cli('cleanup')).toEqual({attempts:[]});return;
+    }
+    if(['denied','tool-failure'].includes(mode)) {
       expect(detail.attempts[0].business).toBe('Unable to collect authorized PR evidence');
-      if(mode==='save-failure'){expect(detail.attempts[0].toolObservationError).toContain('could not be saved');return;}
       const artifact=cli('artifact',receipt.executionId,'--name','observations.jsonl');
       const facts=JSON.parse(Buffer.from(artifact.content,'base64').toString().trim());expect(facts.error).toContain('unavailable');expect(facts.result).toBeUndefined();return;
     }

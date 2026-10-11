@@ -25,6 +25,7 @@ export async function executeRole(records:Records, config:Configuration, executi
   const attempt=records.beginAttempt(executionId,config.version,role.id,environment.id,sha,{kind:'agent',provider:provider.id,sessionPolicy:'new'});
   const directory=join(data,'attempts',attempt);const workspace=join(directory,'repo');const container=`orch-${attempt}-1`;const branch=`orch/${attempt}`;
   let launched=false;
+  let toolObservationError:string|undefined;
   let toolServer:Awaited<ReturnType<typeof serveRoleTools>>|undefined;
   const callableTools=role.tools.map(id=>config.tools!.find(t=>t.id===id)!).filter(t=>t.read);
   const toolDirectory=join(directory,'tools');
@@ -41,7 +42,7 @@ export async function executeRole(records:Records, config:Configuration, executi
     const built=await role.buildPrompt({input:detail.request.input,repo:String(detail.request.repo),actualSha});
     if(typeof built!=='string' || !built)throw Error('Role prompt must be nonempty text');
     const stopDirectory=join(directory,'stop');await mkdir(stopDirectory,{mode:0o700});
-    if(callableTools.length)toolServer=await serveRoleTools(toolDirectory,callableTools,attempt,actualSha,error=>{try{records.updateAttempt(attempt,{toolObservationError:error});}catch(saveError){records.markUnresolved(attempt,saveError);}});
+    if(callableTools.length)toolServer=await serveRoleTools(toolDirectory,callableTools,attempt,actualSha,error=>{toolObservationError=error;try{records.updateAttempt(attempt,{toolObservationError:error});}catch(saveError){records.markUnresolved(attempt,saveError);}});
     const prompt=[built,...role.skills,...role.tools.map(id=>config.tools!.find(t=>t.id===id)!.description),...(callableTools.length?['Call deployed read-only tools with node /orchestrator-tools/call.mjs TOOL_ID JSON_INPUT. Tools are scoped by administrator configuration. Results are observed source data, not verified model conclusions. Tool failures mean evidence is unavailable; report limitations instead of inventing observations.']:[]),'Cooperative cancellation: periodically read /orchestrator-stop/requested. If present, stop starting work and return promptly with your available report. This is a request, not forced termination.'].join('\n\n');
     await writeFile(join(directory,'stdout.log'),'');await writeFile(join(directory,'stderr.log'),'');
     records.updateAttempt(attempt,{kind:'agent',actualSha,workspace,stopDirectory,container,branch,provider:provider.id,prompt,description:role.description,skills:role.skills,tools:role.tools,logs:{complete:false},sessionPolicy:'new',...(callableTools.length?{artifacts:[{name:'observations.jsonl',attemptId:attempt,actualSha,kind:'tool-observations'}]}:{})});
@@ -92,6 +93,7 @@ export async function executeRole(records:Records, config:Configuration, executi
     }catch(error){
       try {records.finishAttempt(attempt,'unknown',{...facts,report:{name:'report.txt',missing:true,complete:false},reportPersistenceError:'Required model report could not be saved'});}catch(saveError){records.markUnresolved(attempt,saveError);}return;
     }
+    if(toolObservationError){try{records.finishAttempt(attempt,'unknown',{...facts,toolObservationError});}catch(saveError){records.markUnresolved(attempt,saveError);}return;}
     if(result.exitCode===null){records.finishAttempt(attempt,'unknown',{...facts,error:result.error ?? 'Agent exit evidence unavailable'});return;}
     let parsed:unknown;
     try {
