@@ -103,6 +103,21 @@ test('socket submissions distinguish missing input from explicit null', async ()
   expect(JSON.parse(accepted.stdout).accepted).toBe(true);
 });
 
+test.each(['repo', 'capability', 'source'])('socket rejects malformed %s fields without creating executions', async field => {
+  const f = await fixture();
+  await start(f);
+  const submission = { repo: 'alpha', capability: 'test-commit', input: 'sha', source: 'manual' };
+  for (const value of [42, '', null, false, {}, [], undefined]) {
+    const result = await socketCall(f.socket, { command: 'submit', submission: { ...submission, [field]: value } });
+    expect(result).toEqual({ status: 400, body: { error: `Invalid ${field}` } });
+  }
+  const listed = await cli(['list', '--socket', f.socket]);
+  expect(JSON.parse(listed.stdout)).toEqual([]);
+  const accepted = await socketCall(f.socket, { command: 'submit', submission });
+  expect(accepted.status).toBe(200);
+  expect(accepted.body.accepted).toBe(true);
+});
+
 test('socket rejects unknown commands instead of returning an existing record', async () => {
   const f = await fixture();
   await start(f);

@@ -30,6 +30,9 @@ export async function serve(data: string, configPath: string) {
       switch (message?.command) {
         case 'submit':
           if (!message.submission || !Object.hasOwn(message.submission, 'input')) throw new Error('Missing input');
+          for (const field of ['repo', 'capability', 'source']) {
+            if (typeof message.submission[field] !== 'string' || !message.submission[field]) throw new Error(`Invalid ${field}`);
+          }
           result = await records.submit(message.submission as Submission, config);
           break;
         case 'list':
