@@ -20,7 +20,7 @@ try {
     const reasons: string[] = [];
     if (['start_failed', 'failed'].includes(execution.status) || attempt?.contract === 'error') reasons.push('failed');
     if (['unknown', 'needs_attention'].includes(execution.status) || attempt?.requiresAttention || attempt?.persistenceError) reasons.push('needs_attention');
-    if ((execution.cancellation || attempt?.cancellation) && attempt && !attempt.stopConfirmation) reasons.push('stop_unconfirmed');
+    if ((execution.cancellation || attempt?.cancellation) && attempt && attempt.runState !== 'start_failed' && !attempt.stopConfirmation) reasons.push('stop_unconfirmed');
     if (!reasons.length) return [];
     // Allowlist: never forward input, business results, errors, env, logs or audit free text.
     return [{ requestId: detail.request.id, executionId: execution.id, status: execution.status,
