@@ -59,6 +59,11 @@ afterEach(async()=>{
   await Promise.all(children.splice(0).map(async c=>{if(c.exitCode===null&&c.signalCode===null){const exit=once(c,'exit');c.kill('SIGTERM');await exit}}));
   await Promise.all(dirs.splice(0).map(dir=>rm(dir,{recursive:true,force:true})));
 });
+test('non-serializable completed capability still records its end time for retention',async()=>{
+  const f=await fixture(`return {business:1n}`);const receipt=await submit(f);const detail=await finished(f.socket,receipt.executionId);
+  expect(detail.execution.status).toBe('completed');expect(detail.attempts[0].contract).toBe('error');expect(detail.attempts[0].endedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+},20000);
+
 realDockerTest('fixed SHA script failure is completed business result with CLI-readable logs and artifacts',async()=>{
   const f=await fixture(`const result=await ctx.exec(['sh','/workspace/test.sh']);return {business:{passed:result.exitCode===0},artifacts:['result.txt']}`);
   const receipt=await submit(f);
