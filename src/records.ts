@@ -139,14 +139,14 @@ export class Records {
       .run(id, JSON.stringify({...this.management(id), ...facts}));
   }
 
-  cancel(id: string, reason: string) {
+  cancel(id: string, reason: string, kind?: 'deadline') {
     const detail = this.show(id);
     if (!detail.execution) throw Error('Execution not found');
     if (detail.execution.status === 'completed') return detail;
     const attempt = detail.attempts.at(-1);
     this.db.exec('BEGIN IMMEDIATE');
     try {
-      const cancellation = this.management(String(detail.execution.id)).cancellation ?? {reason, requestedAt: new Date().toISOString()};
+      const cancellation = this.management(String(detail.execution.id)).cancellation ?? {reason, requestedAt: new Date().toISOString(), ...(kind ? {kind} : {})};
       this.saveManagement(String(detail.execution.id), {cancellation});
       if (!attempt || detail.execution.status === 'queued') this.db.prepare("UPDATE executions SET status = 'cancelled' WHERE id = ?").run(String(detail.execution.id));
       else this.db.prepare('UPDATE attempts SET facts = ? WHERE id = ?').run(JSON.stringify({...JSON.parse(String(this.db.prepare('SELECT facts FROM attempts WHERE id = ?').get(String(attempt.id))!.facts)), cancellation}), String(attempt.id));
@@ -227,9 +227,11 @@ export class Records {
     if(detail.attempts.some(a=>['starting','running','unknown'].includes(a.runState) && !a.stopConfirmation)) throw Error('Stop not confirmed');
     if (detail.attempts.some(a => (a.toolCalls ?? []).some((call: Record<string, any>) => this.toolNeedsReview(call) && !this.toolReconciled(call)))) throw Error('Tool stop and external results not confirmed');
     const id = randomUUID();
+    const createdAt = new Date().toISOString();
+    const deadlineAt = typeof facts.attemptDeadlineSeconds === 'number' ? new Date(Date.parse(createdAt) + facts.attemptDeadlineSeconds * 1000).toISOString() : undefined;
     this.db.exec('BEGIN IMMEDIATE');
     try {
-      this.db.prepare('INSERT INTO attempts VALUES (?, ?, ?, ?, ?, ?, ?)').run(id, executionId, version, capability, environment, 'starting', JSON.stringify({ ...facts, createdAt: new Date().toISOString(), selectedSha }));
+      this.db.prepare('INSERT INTO attempts VALUES (?, ?, ?, ?, ?, ?, ?)').run(id, executionId, version, capability, environment, 'starting', JSON.stringify({ ...facts, createdAt, ...(deadlineAt ? {deadlineAt} : {}), selectedSha }));
       this.saveManagement(executionId,{fixedSha:selectedSha});
       this.db.prepare("UPDATE executions SET status = 'starting' WHERE id = ?").run(executionId);
       this.db.exec('COMMIT');
@@ -268,7 +270,7 @@ export class Records {
       if (previous.kind === 'agent' && !suppliedStop) state = 'unknown';
       facts = {...facts, stopConfirmation: suppliedStop ?? (previous.kind === 'agent' ? undefined : previous.containerState?.Running === false ? {kind:'docker-inspect',confirmedAt:new Date().toISOString(),containerState:previous.containerState} : {kind:'never-started',confirmedAt:new Date().toISOString()})};
       const cancelledFacts = {...previous,...facts} as Record<string,unknown>;
-      delete cancelledFacts.business; delete cancelledFacts.contract;
+      delete cancelledFacts.business; delete cancelledFacts.businessReference; delete cancelledFacts.contract;
       facts = cancelledFacts;
     }
     this.db.exec('BEGIN IMMEDIATE');
@@ -279,6 +281,19 @@ export class Records {
       this.priorAttempts.delete(id);
       this.unresolved.delete(id);
     } catch (error) { this.db.exec('ROLLBACK'); throw error; }
+  }
+
+  markExecutionFailure(id: string, configVersion: string) {
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const changed = this.db.prepare("UPDATE executions SET status = 'start_failed' WHERE id = ? AND status = 'queued'").run(id).changes;
+      if (changed) {
+        const previous = this.management(id).startFailures ?? [];
+        this.saveManagement(id, {startFailures:[...previous, {recordedAt:new Date().toISOString(),configVersion,
+          classification:'execution_start_failure',reason:'Execution failed before a durable attempt could start',logEvent:'execution_failure'}]});
+      }
+      this.db.exec('COMMIT');
+    } catch (error) {this.db.exec('ROLLBACK');throw error;}
   }
 
   markUnresolved(id: string, error: unknown) {
@@ -298,8 +313,7 @@ export class Records {
       if (!terminal.includes(String(detail.execution?.status)) || !Number.isFinite(ended)
         || now - ended < 30 * 24 * 60 * 60 * 1000
         || detail.attempts.some(a => this.isLive(String(a.id)) || !terminal.includes(a.runState) || a.requiresAttention
-          || a.persistenceError || (a.cancellation && !a.stopConfirmation && a.runState !== 'start_failed')
-          || (a.toolCalls ?? []).some((call:Record<string,any>) => this.toolNeedsReview(call) && !this.toolReconciled(call)))) continue;
+          || a.persistenceError && (a.runState !== 'resolved' || !a.reconciliation) || (a.toolCalls ?? []).some((call:Record<string,any>) => this.toolNeedsReview(call) && !this.toolReconciled(call)) || (a.cancellation && !a.stopConfirmation && a.runState !== 'start_failed'))) continue;
       for (const attempt of detail.attempts) {
         const id = String(attempt.id);
         if (attempt.cleanup?.status === 'cleaned' && (attempt.toolCalls ?? []).every((call:Record<string,any>)=>call.cleanup?.status === 'cleaned')) { attempts.push({attemptId:id,status:'cleaned'}); continue; }

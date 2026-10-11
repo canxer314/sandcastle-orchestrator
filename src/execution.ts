@@ -31,13 +31,19 @@ export async function snapshot(repo: string, sha: string, workspace: string) {
   }
 }
 
-export async function readArtifact(directory: string, name: string) {
+export async function readArtifact(directory: string, name: string, offset?:number) {
   if (typeof name !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name)) throw Error('Invalid artifact name');
   const file=await open(join(directory,name),constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   try {
     const stat=await file.stat();
     if(!stat.isFile()) throw Error('Artifact is not a regular file');
-    if(stat.size>8*1024*1024) throw Error('Artifact exceeds 8 MiB read limit');
+    if(offset!==undefined) {
+      if(!Number.isSafeInteger(offset) || offset<0 || offset>stat.size)throw Error('Invalid artifact offset');
+      const buffer=Buffer.alloc(Math.min(1024*1024,stat.size-offset));
+      const {bytesRead}=await file.read(buffer,0,buffer.length,offset);
+      return {content:buffer.subarray(0,bytesRead).toString('base64'),offset,nextOffset:offset+bytesRead,size:stat.size,complete:offset+bytesRead===stat.size};
+    }
+    if(stat.size>8*1024*1024) throw Error('Artifact exceeds 8 MiB read limit; use offset for chunked reading');
     return (await file.readFile()).toString('base64');
   } finally {await file.close()}
 }
@@ -49,7 +55,7 @@ export async function cancelExecution(records: Records, id: string) {
     let published=false;
     try {
       if (!attempt.stopDirectory) throw Error('Stop notification path unavailable');
-      await writeFile(join(String(attempt.stopDirectory),'requested'),'requested\n',{mode:0o600,flag:'wx'});
+      await writeFile(join(String(attempt.stopDirectory),'requested'),`requested\n${JSON.stringify({attemptId:attempt.id,executionId:detail.execution?.id,...attempt.cancellation})}\nStop starting new work, summarize available results and end normally. This request does not confirm that tools, child agents or remote work have stopped.\n`,{mode:0o600,flag:'wx'});
       published=true;
     } catch(error) { published=(error as NodeJS.ErrnoException).code==='EEXIST'; }
     try {

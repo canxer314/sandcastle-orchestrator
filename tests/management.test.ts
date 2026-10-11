@@ -128,7 +128,115 @@ test.each([
   };`);
   const result = await cli(['serve', '--data', f.dir, '--config', f.config]);
   expect(result.code, result.stderr).toBe(1);
-  expect(result.stderr).toMatch(/Invalid or duplicate tool|Invalid executable tool binding/);
+  expect(JSON.parse(result.stderr.trim())).toMatchObject({event:'service_failure',error:'Control service failed'});
+  const {loadConfiguration} = await import('../src/config.js');
+  await expect(loadConfiguration(f.config)).rejects.toThrow(/Invalid or duplicate tool|Invalid executable tool binding/);
+});
+
+test('service startup failures produce safe timestamped service logs without configuration secrets', async () => {
+  const f = await fixture();
+  await writeFile(f.config, `throw new Error('Authorization: Bearer startup-secret password=private');`);
+  const result = await cli(['serve', '--data', f.dir, '--config', f.config]);
+  expect(result.code).toBe(1);
+  expect(result.stderr).not.toContain('startup-secret');
+  expect(result.stderr).not.toContain('private');
+  const event = JSON.parse(result.stderr.trim());
+  expect(event).toMatchObject({ event: 'service_failure', error: 'Control service failed' });
+  expect(Number.isFinite(Date.parse(event.time))).toBe(true);
+});
+
+test('background execution failures write safe service logs linked to the execution', async () => {
+  const f = await fixture();
+  await writeFile(f.config, `export default {version:'v1',repos:[{id:'alpha',location:'/test/alpha'}],environments:[{id:'test',docker:{image:'unused'}}],capabilities:[{id:'test-commit',environment:'test',validate(){},execution:{commit(){throw Error('Authorization: Bearer execution-secret')}},async run(){}}]};`);
+  const child = await start(f);
+  let errors = ''; child.stderr!.on('data',data=>errors+=data);
+  const receipt = await socketCall(f.socket,{command:'submit',submission:{repo:'alpha',capability:'test-commit',input:'sha',source:'manual'}});
+  await expect.poll(()=>errors).toContain('execution_failure');
+  expect(errors).not.toContain('execution-secret');
+  expect(JSON.parse(errors.trim())).toMatchObject({event:'execution_failure',executionId:receipt.body.executionId,error:'Control service failed'});
+  await expect.poll(async()=>(await socketCall(f.socket,{command:'show',id:receipt.body.executionId})).body.execution.status).toBe('start_failed');
+  const failure = (await socketCall(f.socket,{command:'show',id:receipt.body.executionId})).body.execution.startFailures[0];
+  expect(failure).toMatchObject({configVersion:'v1',classification:'execution_start_failure',reason:'Execution failed before a durable attempt could start',logEvent:'execution_failure'});
+  expect(Number.isFinite(Date.parse(failure.recordedAt))).toBe(true);
+  await stop(child); await start(f);
+  expect((await socketCall(f.socket,{command:'show',id:receipt.body.executionId})).body.execution.startFailures).toEqual([failure]);
+  const retry = await socketCall(f.socket,{command:'retry',id:receipt.body.executionId,source:'operator',handling:'checked startup failure',reason:'retry',externalResults:'nothing launched'});
+  expect(retry.status).toBe(200);
+  await expect.poll(async()=>(await socketCall(f.socket,{command:'show',id:receipt.body.executionId})).body.execution.startFailures?.length).toBe(2);
+});
+
+test('failure bookkeeping errors remain visible in safe service logs', async () => {
+  const f = await fixture();
+  await writeFile(f.config, `export default {version:'v1',repos:[{id:'alpha',location:'/test/alpha'}],environments:[{id:'test',docker:{image:'unused'}}],capabilities:[{id:'test-commit',environment:'test',validate(){},execution:{commit(){throw Error('startup-secret')}},async run(){}}]};`);
+  const child = await start(f);
+  let errors = ''; child.stderr!.on('data',data=>errors+=data);
+  const {DatabaseSync} = await import('node:sqlite');
+  const db = new DatabaseSync(join(f.dir,'records.sqlite'));
+  db.exec("CREATE TRIGGER no_failure BEFORE UPDATE ON executions BEGIN SELECT RAISE(FAIL,'password=save-secret'); END;");
+  try {
+    const receipt = await socketCall(f.socket,{command:'submit',submission:{repo:'alpha',capability:'test-commit',input:'sha',source:'manual'}});
+    await expect.poll(()=>errors).toContain('execution_failure_save_failed');
+    expect(errors).not.toContain('save-secret');
+    expect(errors).not.toContain('startup-secret');
+    expect(errors).toContain(receipt.body.executionId);
+    const detail = (await socketCall(f.socket,{command:'show',id:receipt.body.executionId})).body;
+    expect(detail.execution.status).toBe('queued');
+    expect(detail.execution.startFailures).toBeUndefined();
+  } finally {db.close();}
+});
+
+test('uncaught control service faults exit with safe evidence instead of leaking exception text', async () => {
+  const f = await fixture();
+  await writeFile(f.config, `setTimeout(() => { throw Error('Bearer runtime-secret'); }, 300); export default {version:'v1',repos:[],environments:[],capabilities:[]};`);
+  const result = await cli(['serve','--data',f.dir,'--config',f.config]);
+  expect(result.code).toBe(1);
+  expect(result.stderr).not.toContain('runtime-secret');
+  const events = result.stderr.trim().split('\n').filter(line => line.startsWith('{')).map(line => JSON.parse(line));
+  expect(events).toContainEqual(expect.objectContaining({event:'service_crash',error:'Control service failed'}));
+});
+
+test('external attention query uses CLI JSON, exposes minimal fields and fails visibly when unavailable', async () => {
+  const f = await fixture();
+  const service = await start(f);
+  const submission = await socketCall(f.socket, {command:'submit', submission:{repo:'alpha',capability:'test-commit',input:'secret-input',source:'secret-source'}});
+  const runQuery = async () => {
+    const child = spawn(process.execPath, ['--import','tsx','examples/query-attention.ts','--socket',f.socket,'--repo','alpha'], {cwd:root});
+    let stdout = ''; let stderr = '';
+    child.stdout.on('data', data => stdout += data);
+    child.stderr.on('data', data => stderr += data);
+    const [code] = await once(child,'exit');
+    return {code,stdout,stderr};
+  };
+  const healthy = await runQuery();
+  expect(healthy.code).toBe(0);
+  expect(JSON.parse(healthy.stdout)).toEqual({version:1,available:true,items:[]});
+  expect(healthy.stdout).not.toContain('secret');
+  await stop(service);
+  const unavailable = await runQuery();
+  expect(unavailable.code).toBe(1);
+  expect(unavailable.stdout).toBe('');
+  expect(JSON.parse(unavailable.stderr)).toEqual({version:1,available:false,error:'Control query failed'});
+  expect(submission.body.accepted).toBe(true);
+});
+
+test.each(['empty','items','invalid','missing-jq','missing-channel'])('documented notification bridge handles %s without silently swallowing errors', async mode => {
+  const f = await fixture();
+  const {readFile} = await import('node:fs/promises');
+  const readme = await readFile(join(root,'README.md'),'utf8');
+  const snippet = readme.slice(readme.indexOf('umask 077\nsummary=$(mktemp)')).split('```')[0];
+  const bin = join(f.dir,'bin'); await mkdir(bin);
+  const marker = join(f.dir,'notified');
+  await writeFile(join(bin,'node'), '#!/bin/sh\nprintf "%s\\n" \'{"version":1,"available":true,"items":[]}\'\n', {mode:0o700});
+  await writeFile(join(bin,'notify-summary'), mode==='missing-channel'?'#!/bin/sh\nexit 127\n':`#!/bin/sh\ncat > ${JSON.stringify(marker)}\n`, {mode:0o700});
+  if(mode !== 'missing-jq') await writeFile(join(bin,'jq'), `#!/bin/sh\n${mode==='invalid'?'exit 4':['items','missing-channel'].includes(mode)?'echo 1; exit 0':'echo 0; exit 0'}\n`, {mode:0o700});
+  else await writeFile(join(bin,'jq'),'#!/bin/sh\nexit 127\n',{mode:0o700});
+  const script = join(f.dir,'bridge.sh');await writeFile(script,snippet);
+  const child=spawn('/bin/bash',[script],{env:{...process.env,PATH:`${bin}:/usr/bin:/bin`,DATA:f.dir}});
+  let errors='';child.stderr.on('data',d=>errors+=d);
+  const [code]=await once(child,'exit');
+  expect(code,errors).toBe(['empty','items'].includes(mode)?0:1);
+  const notified=await readFile(marker,'utf8').catch(()=>null);
+  expect(notified!==null).toBe(mode==='items');
 });
 
 test('socket submissions distinguish missing input from explicit null', async () => {
@@ -558,4 +666,9 @@ test('explicit execution exposes saved attempt facts through CLI', async () => {
   }
   expect(detail.attempts).toHaveLength(1);
   expect(detail.attempts[0]).toMatchObject({configVersion:'config-v2',capability:'test-commit',environment:'test',runState:'start_failed'});
+  const query = spawn(process.execPath,['--import','tsx','examples/query-attention.ts','--socket',f.socket],{cwd:root});
+  let output = ''; query.stdout.on('data',data=>output+=data);
+  const [code] = await once(query,'exit');
+  expect(code).toBe(0);
+  expect(JSON.parse(output).items).toEqual([{requestId:submitted.body.requestId,executionId:submitted.body.executionId,status:'start_failed',attemptId:detail.attempts[0].id,reasons:['failed']}]);
 });

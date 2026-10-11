@@ -30,6 +30,7 @@ export async function loadConfiguration(path: string): Promise<Configuration> {
     }
   }
   for(const tool of Array.isArray(config.tools) ? config.tools : []) {
+    if(tool?.read!==undefined && (typeof tool.read!=='function' || typeof tool.id!=='string' || !tool.id || typeof tool.description!=='string' || config.tools.filter((other:{id?:unknown}|null)=>other?.id===tool.id).length!==1))throw Error('Invalid or duplicate tool');
     if(tool?.capability!==undefined) {
       if(typeof tool.id!=='string' || !tool.id || typeof tool.description!=='string' || !tool.description || config.tools.filter((other:{id?:unknown}|null)=>other?.id===tool.id).length!==1)throw Error('Invalid or duplicate tool');
       const capability=config.capabilities.find((c:{id:string})=>c.id===tool.capability);
@@ -62,10 +63,51 @@ export async function loadConfiguration(path: string): Promise<Configuration> {
     if(environment.docker.network==='host')throw Error('Role Docker host network is not permitted');
     const role=config.roles.find((r:Role)=>r.id===binding.role);
     if(role.tools.some((id:string)=>config.tools?.some((t:{id:string;capability?:string})=>t.id===id && t.capability)) && config.providers.find((p:{id:string})=>p.id===binding.provider).mcp!=='claude-code')throw Error('Executable role tools require explicit claude-code MCP provider');
+    if(binding.attemptDeadlineSeconds!==undefined && (typeof binding.attemptDeadlineSeconds!=='number' || !Number.isFinite(binding.attemptDeadlineSeconds) || binding.attemptDeadlineSeconds<=0 || binding.attemptDeadlineSeconds>(8640000000000000-Date.now())/1000))throw Error('Invalid role attempt deadline');
     bindings.add(binding.role);
+  }
+  if (config.mcpServices !== undefined && !Array.isArray(config.mcpServices)) throw Error('Invalid MCP services');
+  const serviceIds = new Set<string>();
+  for (const service of config.mcpServices ?? []) {
+    if (!service || typeof service.id !== 'string' || !/^[a-zA-Z0-9_-]+$/.test(service.id) || serviceIds.has(service.id) || typeof service.prepare !== 'function' || !Array.isArray(service.tools) || service.tools.some((t: unknown) => typeof t !== 'string' || !t) || !service.capabilities || typeof service.access !== 'string' || !service.access || !['none','code'].includes(service.context)) throw Error('Invalid MCP service');
+    serviceIds.add(service.id);
+    for (const key of ['context','directory','logs','longTasks','query','cancel','retry']) if (service.capabilities[key] !== null && (typeof service.capabilities[key] !== 'string' || !service.capabilities[key])) throw Error(`Missing MCP capability description: ${service.id}/${key}`);
+  }
+  for (const role of config.roles ?? []) {
+    if (role.mcp !== undefined && !Array.isArray(role.mcp)) throw Error(`Invalid MCP references: ${role.id}`);
+    const ids = new Set<string>();
+    for (const reference of role.mcp ?? []) {
+      if (!reference || typeof reference.service !== 'string') throw Error(`Invalid MCP reference: ${role.id}`);
+      const service = config.mcpServices?.find((s: McpService) => s.id === reference.service);
+      if (!service) throw Error(`Unknown MCP service: ${reference.service}`);
+      if (ids.has(reference.service) || !Array.isArray(reference.tools) || !reference.tools.length || reference.tools.some((t: unknown) => typeof t !== 'string' || !service.tools.includes(t)) || (reference.requiredCapabilities !== undefined && (!Array.isArray(reference.requiredCapabilities) || reference.requiredCapabilities.some((c: string) => !Object.hasOwn(service.capabilities,c))))) throw Error(`Invalid MCP tool or capability references: ${role.id}`);
+      ids.add(reference.service);
+      const binding = config.roleBindings?.find((b: {role:string}) => b.role === role.id);
+      if (binding && typeof config.providers.find((p: {id:string}) => p.id === binding.provider)?.configureMcp !== 'function') throw Error(`Provider cannot configure MCP: ${binding.provider}`);
+    }
   }
   return config;
 }
+
+export type McpCapability = 'context' | 'directory' | 'logs' | 'longTasks' | 'query' | 'cancel' | 'retry';
+export interface McpService {
+  id: string;
+  tools: string[];
+  // null means unavailable; text describes the actual service behavior and limits.
+  capabilities: Record<McpCapability, string | null>;
+  access: string;
+  context: 'none' | 'code';
+  prepare(context: {repo: string; actualSha: string; workspace: string; attemptId: string}): Promise<{
+    configFile: string;
+    binding?: {repo: string; actualSha: string; location: string};
+  }>;
+}
+export interface McpReference {
+  service: string;
+  tools: string[];
+  requiredCapabilities?: McpCapability[];
+}
+export interface McpConnection {service: string; configFile: string; tools: string[]}
 
 export interface Role {
   id: string;
@@ -74,6 +116,7 @@ export interface Role {
   buildPrompt(context: {input: unknown; repo: string; actualSha: string}): string | Promise<string>;
   skills: string[];
   tools: string[];
+  mcp?: McpReference[];
   validateReport(output: string): unknown;
 }
 
@@ -87,9 +130,10 @@ export interface ExecutionContext {
 export interface Configuration {
   version: string;
   roles?: Role[];
-  tools?: {id:string; description:string; capability?:string; inputSchema?:ZodObject}[];
-  providers?: {id: string; agent: AgentProvider; mcp?:'claude-code'}[];
-  roleBindings?: {role: string; provider: string; environment: string; commit(input: unknown): string}[];
+  tools?: {id:string; description:string; capability?:string; inputSchema?:ZodObject; read?(input:unknown): Promise<unknown>}[];
+  mcpServices?: McpService[];
+  providers?: {id: string; agent: AgentProvider; mcp?:'claude-code'; configureMcp?(agent: AgentProvider, connections: McpConnection[]): AgentProvider}[];
+  roleBindings?: {role: string; provider: string; environment: string; attemptDeadlineSeconds?: number; commit(input: unknown): string}[];
   repos: { id: string; location: string }[];
   environments: { id: string; docker?: { image: string; binary?: string; network?: string; env?: Record<string,string> } }[];
   capabilities: {
