@@ -11,7 +11,7 @@ pnpm install --frozen-lockfile
 pnpm start serve --data /srv/orchestrator-data --config ./examples/config.ts
 ```
 
-先修改配置中的 repo 登记和能力定义。配置是管理员部署的可信 TypeScript 代码，启动时加载，不热更新。`version` 填配置仓库的部署 commit，不是任务代码 SHA。输入校验器可以同步或异步执行，以抛出错误或 Promise 拒绝表示拒绝；服务等待校验结束后才保存接纳记录。服务在校验前保存原始输入快照，校验器的返回值或原地修改均不改写接纳或拒绝记录中的输入。旧配置仍有效，没有 `execution` 的能力只接纳排队，不调用 `run`。明确配置 `execution.commit(input)` 和对应环境的 `docker.image` 后，只有新提交自动执行；不完整执行配置拒绝启动服务。示例能力要求完整 SHA，业务脚本为目标 commit 中的 `test.sh`。
+先修改配置中的 repo 登记和能力定义。配置是管理员部署的可信 TypeScript 代码，启动时加载，不热更新。`version` 填配置仓库的部署 commit，不是任务代码 SHA。输入校验器可以同步或异步执行，以抛出错误或 Promise 拒绝表示拒绝；服务等待校验结束后才保存接纳记录。服务在校验前保存原始输入快照，校验器的返回值或原地修改均不改写接纳或拒绝记录中的输入。旧配置仍有效，没有 `execution` 的能力只接纳排队，不调用 `run`。明确配置 `execution.commit(input)` 和对应环境的 `docker.image` 后，只有新提交或显式 retry 自动执行；历史确定性排队请求不因重启或后来启用执行配置而自动启动。不完整执行配置拒绝启动服务。示例能力要求完整 SHA，业务脚本为目标 commit 中的 `test.sh`。
 
 运行目录必须专供本应用使用，与配置及目标 checkout 分开，不提交到 Git。启动前检查应用、配置目录和登记的 checkout 路径，拒绝包含关系及符号链接重合，检查失败不修改目录权限。repo 位置当前是本地 checkout 路径。服务将目录权限设为 `0700`，socket 和新建文件设为 `0600`。同一目录只能启动一个控制实例，内核文件锁在服务崩溃后释放。无需也不得通过删除锁文件恢复。
 
@@ -33,7 +33,7 @@ pnpm start show REQUEST_OR_EXECUTION_ID --socket /srv/orchestrator-data/control.
 
 合法提交在同一个 SQLite 事务中保存请求和执行，返回 `accepted: true`、`requestId`、`executionId`。无效 repo、能力或输入在数据库可写时保存拒绝记录，返回 `accepted: false`、`requestId`、`reason`，不建立执行。校验器抛错即拒绝，即使错误消息为空，也不会建立执行。拒绝也是已记录的提交响应，退出码为 0，脚本必须检查 `accepted`。必要保存失败返回非零退出码，不返回接纳或拒绝回执。
 
-`show` 可使用请求或执行标识，包含原始输入、来源、计划时间 `scheduledAt`、去重键 `deduplicationKey`、拒绝原因、执行状态和尝试列表。`list` 只列执行，按提交顺序返回，可按 repo、状态和 `--source` 筛选。旧配置和历史 `queued` 记录保持排队，重启不会消费它们。原请求/执行表保留，新增独立尝试表，旧提交、查询协议和回执字段保持兼容。
+`show` 可使用请求或执行标识，包含原始输入、来源、计划时间 `scheduledAt`、去重键 `deduplicationKey`、拒绝原因、执行状态和尝试列表。`list` 只列执行，按提交顺序返回，可按 repo、状态和 `--source` 筛选。没有执行配置的旧能力或未绑定角色保持排队。启动时按当前配置扫描历史 `queued` 主 Agent 请求，已绑定角色参与调度；历史确定性请求保持排队，旧的未知尝试不自动重跑。原请求/执行表保留，旧提交、查询协议和回执字段保持兼容。
 
 提交可选 `--deduplication-key KEY` 和 `--scheduled-at 2026-10-11T00:00:00Z`；socket 字段为 `deduplicationKey`、`scheduledAt`。键必须是非空字符串，计划时间必须是带时区的 ISO 时间字符串，畸形字段返回 HTTP 400，不建立记录。同一 `source` 内，同键且 repo、capability、原始 JSON 输入、计划时间相同，返回原有接纳回执；JSON 对象字段顺序不影响比较，数组顺序有意义，计划时间按原字符串比较。不同内容返回 HTTP 400 和 `Deduplication key conflict`，CLI 非零退出，不覆盖旧记录。不同来源互不合并，无键每次新建。去重只登记成功接纳的请求；拒绝记录保留键线索，但不占键。接纳、执行和键登记在同一 SQLite 事务中完成。
 
@@ -61,6 +61,22 @@ pnpm start logs EXECUTION_ID --attempt ATTEMPT_ID --socket /srv/orchestrator-dat
 `logs` 返回 stdout/stderr 最后 64 KiB、`truncated`、`complete` 与 attempt/SHA；不存在的流返回 `null`，未完整结束不宣称日志完整。原始流随运行写入权限受限的文件；`exec` 返回每流最后 64 KiB。产物必须是 `/artifacts` 内单层普通文件，名称仅字母数字、`.`、`_`、`-`，不跟随 symlink，单个读取上限 8 MiB。引用绑定 attempt 与实际 SHA，CLI 以 base64 读取。日志与产物不做秘密过滤，不要让脚本输出秘密。
 
 状态 `starting`/`running` 表示本控制实例的进展，`completed` 表示入口结束已保存；`contract: valid/error` 与 `business` 分开，测试失败可正常完成。`start_failed` 表示明确启动失败，`unknown` 表示事实/保存未决，需人工核查。结束保存失败在当前查询显示 `persistenceError`，持久化状态仍保留原值；重启后原 `starting/running` 投影为 `unknown`，包含 `persistedRunState` 与 `requiresAttention`，不虚报完成或自动重跑。控制服务中断或 Docker client close 不保证容器已停止；每次命令保留容器，inspect 的 `State.Running/Status/ExitCode` 才是可信结束证据，证据缺失或仍在运行保持 unknown，脚本真实退出 125/126/127 也可以正常完成。确认结束后能力解析失败记录 completed + contract:error。尝试保留容器名与结束证据用于人工核查。容器不自动删除（包括已结束容器），需要管理员依据记录确认停止后定期清理，不能把 client 退出视为停止证明；本版本不实现自动清理。
+
+## 主 Agent 额度与排队（#21）
+
+配置顶层可选 `primaryAgentLimit` 设置全局主 Agent 上限，`repos` 的同名字段设置该 repo 上限，均须为正安全整数。省略全局字段不设全局上限，省略 repo 字段默认串行，旧配置无需修改。配置只在启动时加载，降低额度不会停止已有尝试，新请求等待占用降到额度以下。
+
+```ts
+primaryAgentLimit: 4,
+repos: [
+  { id: 'alpha', location: '/srv/repos/alpha' }, // 默认 1
+  { id: 'beta', location: '/srv/repos/beta', primaryAgentLimit: 2 },
+],
+```
+
+控制服务按已持久化的提交顺序扫描最早可启动请求，可跳过额度已满的 repo。尝试保存成功、进入 `starting` 即占位，包括环境准备；保存失败不开始实际执行。启动中、运行中、未知及停止未确认的主 Agent 保留额度，重启不会释放。可信结束或恢复者 `confirm-stop` 确认后可调度等待请求，单独发送取消不释放。未知记录中的停止确认仍保留供后续 `resolve`/`retry` 核对，不要求先重试才释放额度。
+
+独立确定性执行不占主 Agent 额度，也不因主 Agent 满额等待，仍须保存成功并确认旧尝试停止。内部工具/MCP 与 Agent 自派子 Agent 不另排队、登记或占额。额度不保证总进程数、模型调用数、成本或全机资源；没有优先级、抢占、分布式租约或等待时长保证。
 
 ## 单角色报告运行（#19，本地实现）
 
@@ -167,7 +183,7 @@ MCP 只能绑定显式声明 `capability.execution.workspace: 'readonly'` 的能
 
 ## 取消与人工恢复
 
-重启不消费历史 queued 请求，也不重跑、重连或接管旧 starting/running 尝试。`show` 的 `location` 如实返回容器名；harness process identity 和 reconnect handle 不可得时为 `null`，不能据此声称已停止。
+重启扫描可执行的历史 queued 主 Agent 请求，历史确定性请求仍保持排队；不会重跑、重连或接管旧 starting/running 尝试。`show` 的 `location` 如实返回容器名；harness process identity 和 reconnect handle 不可得时为 `null`，不能据此声称已停止。
 
 ```sh
 pnpm start cancel EXECUTION_ID --socket /srv/orchestrator-data/control.sock --reason '停止该请求'
@@ -269,4 +285,4 @@ pnpm audit
 
 管理测试经真实 CLI/socket 启动控制服务，用临时 SQLite 和文件系统验证提交、拒绝、查询、事务失败、服务独占、崩溃恢复和文件权限。`tests/execution.test.ts` 的真实 Docker 用例默认 skip，仅在已获授权主机显式 `ORCHESTRATOR_REAL_DOCKER=1 pnpm test` 才执行。它们使用临时 Git repo 和本地 `node:22.22-alpine` 镜像执行真实无网络 Docker 脚本，验证固定 SHA、独立目录、非零业务结果、日志/产物与隔离限制；需要管理员授权的测试主机和预部署镜像，缺镜像/daemon 时测试失败，不下载或绕过。SQLite trigger 故障注入验证启动前与结束保存失败，受控 Docker CLI 替身验证 client 退出但容器仍运行或 inspect 不可得的未知结束窗口，Git adapter 替身验证明确禁用 lazy fetch。常规 suite 不运行真实业务项目、模型、Docker 或外部写入；受控 MCP 测试使用真实 stdio 协议但不调用模型。授权真实 provider 验收见 [#19](docs/issue-19-real-acceptance.md) 与 [#22](docs/issue-22-real-acceptance.md)，不代表任意镜像安全或内核级隔离已验证。
 
-后续实现沿用这一管理入口，按 #19–#29 增加能力与验收。本版本没有自动恢复、Agent 调度或备份管理，不应按完整生产规格部署。
+后续实现沿用这一管理入口，按 #19–#29 增加能力与验收。本版本没有自动恢复或备份管理，不应按完整生产规格部署。
