@@ -33,10 +33,21 @@ export async function serve(data: string, configPath: string) {
           for (const field of ['repo', 'capability', 'source']) {
             if (typeof message.submission[field] !== 'string' || !message.submission[field]) throw new Error(`Invalid ${field}`);
           }
+          for (const field of ['deduplicationKey', 'scheduledAt']) {
+            const value = message.submission[field];
+            if (value !== undefined && (typeof value !== 'string' || !value)) throw new Error(`Invalid ${field}`);
+          }
+          if (message.submission.scheduledAt !== undefined) {
+            const time = message.submission.scheduledAt;
+            const format = /^\d{4}-\d{2}-\d{2}T(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)$/;
+            const calendar = new Date(`${time.slice(0, 10)}T00:00:00Z`);
+            if (!format.test(time) || !Number.isFinite(Date.parse(time))
+              || !Number.isFinite(calendar.getTime()) || calendar.toISOString().slice(0, 10) !== time.slice(0, 10)) throw new Error('Invalid scheduledAt');
+          }
           result = await records.submit(message.submission as Submission, config);
           break;
         case 'list':
-          result = records.list(message.repo, message.status);
+          result = records.list(message.repo, message.status, message.source);
           break;
         case 'show':
           result = records.show(message.id);

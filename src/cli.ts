@@ -4,7 +4,7 @@ import { call, serve } from './control.js';
 try {
   const { values, positionals } = parseArgs({
     allowPositionals: true,
-    options: Object.fromEntries(['data', 'config', 'socket', 'repo', 'capability', 'input', 'source', 'status'].map(name => [name, { type: 'string' as const }])),
+    options: Object.fromEntries(['data', 'config', 'socket', 'repo', 'capability', 'input', 'source', 'status', 'deduplication-key', 'scheduled-at'].map(name => [name, { type: 'string' as const }])),
   });
   const command = positionals[0];
   if (!['serve', 'submit', 'show', 'list'].includes(command)) throw new Error('Unknown command; use serve, submit, show or list');
@@ -19,8 +19,8 @@ try {
   } else {
     const socket = required('socket');
     const message = command === 'submit'
-      ? { command, submission: { repo: required('repo'), capability: required('capability'), input: JSON.parse(required('input')), source: required('source') } }
-      : command === 'list' ? { command, repo: values.repo, status: values.status }
+      ? { command, submission: { repo: required('repo'), capability: required('capability'), input: JSON.parse(required('input')), source: required('source'), deduplicationKey: values['deduplication-key'], scheduledAt: values['scheduled-at'] } }
+      : command === 'list' ? { command, repo: values.repo, status: values.status, source: values.source }
       : { command, id: positionals[1] };
     console.log(JSON.stringify(await call(socket, message)));
   }
