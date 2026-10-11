@@ -7,7 +7,7 @@ try {
     options: Object.fromEntries(['data', 'config', 'socket', 'repo', 'capability', 'input', 'source', 'status', 'deduplication-key', 'scheduled-at', 'attempt', 'name', 'reason', 'handling', 'external-results', 'offset'].map(name => [name, { type: 'string' as const }])),
   });
   const command = positionals[0];
-  if (!['serve', 'submit', 'show', 'list', 'logs', 'artifact', 'cancel', 'confirm-stop', 'resolve', 'retry'].includes(command)) throw new Error('Unknown command; use serve, submit, show, list, logs, artifact, cancel, confirm-stop, resolve or retry');
+  if (!['serve', 'submit', 'show', 'list', 'logs', 'artifact', 'cancel', 'confirm-stop', 'resolve', 'retry', 'cleanup'].includes(command)) throw new Error('Unknown command; use serve, submit, show, list, logs, artifact, cancel, confirm-stop, resolve, retry or cleanup');
   if (['show', 'logs', 'artifact', 'cancel', 'confirm-stop', 'resolve', 'retry'].includes(command) && !positionals[1]) throw new Error('Missing identifier');
   const required = (name: string) => {
     const value = values[name];
