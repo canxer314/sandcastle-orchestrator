@@ -4,6 +4,9 @@ import { join } from 'node:path';
 import { acquireControlLock } from './lock.js';
 import { checkDataSeparation } from './paths.js';
 import { Records } from './records.js';
+import { execute, readArtifact } from './execution.js';
+import { open } from 'node:fs/promises';
+import { constants } from 'node:fs';
 import { loadConfiguration, type Submission } from './config.js';
 
 export async function serve(data: string, configPath: string) {
@@ -44,11 +47,42 @@ export async function serve(data: string, configPath: string) {
             if (!format.test(time) || !Number.isFinite(Date.parse(time))
               || !Number.isFinite(calendar.getTime()) || calendar.toISOString().slice(0, 10) !== time.slice(0, 10)) throw new Error('Invalid scheduledAt');
           }
-          result = await records.submit(message.submission as Submission, config);
+          const submitted = await records.submit(message.submission as Submission, config);
+          result = submitted.receipt;
+          if (submitted.newExecutionId) {
+            const executionId = submitted.newExecutionId;
+            void execute(records, config, executionId, data).catch(error => console.error(JSON.stringify({ error: String(error), executionId })));
+          }
           break;
         case 'list':
           result = records.list(message.repo, message.status, message.source);
           break;
+        case 'logs':
+        case 'artifact': {
+          const detail = records.show(message.id);
+          const attempt = detail.attempts.find(a => a.id === message.attempt) ?? (message.attempt ? undefined : detail.attempts.at(-1));
+          if (!attempt) throw Error('Attempt not found');
+          const directory = join(data, 'attempts', String(attempt.id));
+          if (message.command === 'logs') {
+            const read = async (stream: string) => {
+              try {
+                const file=await open(join(directory, `${stream}.log`),constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+                try {
+                  const stat=await file.stat();if(!stat.isFile())throw Error('Log is not a regular file');
+                  const buffer=Buffer.alloc(Math.min(stat.size,65536));
+                  await file.read(buffer,0,buffer.length,Math.max(0,stat.size-buffer.length));
+                  return {text:buffer.toString('utf8'),truncated:stat.size>buffer.length};
+                } finally {await file.close()}
+              } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null; throw error; }
+            };
+            const stdout = await read('stdout'); const stderr = await read('stderr');
+            result = {attemptId:attempt.id,actualSha:attempt.actualSha,stdout:stdout?.text??null,stderr:stderr?.text??null,truncated:{stdout:stdout?.truncated??false,stderr:stderr?.truncated??false},complete:attempt.logs?.complete === true && stdout !== null && stderr !== null};
+          } else {
+            if (!attempt.artifacts?.some((a: {name:string}) => a.name === message.name)) throw Error('Artifact not registered');
+            result = {attemptId:attempt.id,actualSha:attempt.actualSha,name:message.name,encoding:'base64',content:await readArtifact(join(directory,'artifacts'),message.name)};
+          }
+          break;
+        }
         case 'show':
           result = records.show(message.id);
           break;

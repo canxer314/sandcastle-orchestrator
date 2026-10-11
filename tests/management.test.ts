@@ -495,3 +495,23 @@ test('existing pre-key databases remain readable and writable after upgrade', as
   expect((await socketCall(f.socket, { command: 'submit', submission: { ...submission, deduplicationKey: 'new-key' } })).body.accepted).toBe(true);
   expect((await socketCall(f.socket, { command: 'list' })).body).toHaveLength(2);
 });
+
+test('explicit execution exposes saved attempt facts through CLI', async () => {
+  const f = await fixture();
+  await writeFile(f.config, `export default { version:'config-v2', repos:[{id:'alpha',location:'/test/alpha'}],
+    environments:[{id:'test',docker:{image:'node:22.22-alpine'}}], capabilities:[{
+      id:'test-commit',environment:'test',validate(){}, execution:{commit(input){return input}},
+      async run(ctx){return {business:{passed:true}}}
+    }] };`);
+  await start(f);
+  const submitted = await socketCall(f.socket, { command:'submit', submission:{repo:'alpha',capability:'test-commit',input:'a'.repeat(40),source:'manual'} });
+  expect(submitted.body.accepted).toBe(true);
+  let detail: any;
+  for (let i=0;i<50;i++) {
+    detail = JSON.parse((await cli(['show',submitted.body.executionId,'--socket',f.socket])).stdout);
+    if (detail.attempts.length && detail.execution.status !== 'starting') break;
+    await new Promise(r=>setTimeout(r,20));
+  }
+  expect(detail.attempts).toHaveLength(1);
+  expect(detail.attempts[0]).toMatchObject({configVersion:'config-v2',capability:'test-commit',environment:'test',runState:'start_failed'});
+});
