@@ -66,7 +66,21 @@ pnpm exec vitest run tests/maintenance-restore.test.ts tests/management.test.ts 
 
 首次当前目标运行还发现测试误把未设置的 `restorePending` 当成显式 false；该字段实际省略。删除这项与升级暂停要求无关的断言后，三个相关文件 73/73 passed，其中跨版本用例通过并输出上述真实证据。没有修改生产代码、数据格式、配置接口、旧命令或 rollback 机制，不需要行为 changeset。README 已链接本文并说明暂停升级和匹配旧备份回退，无需重复增加链接。
 
-本次补验收的 `pnpm run typecheck` 通过，三个相关文件 73/73 passed，Spec 独立复跑维护演练 3/3 passed。完整串行回归尚未通过：首次为 209 passed、3 failed、20 skipped，`pr-analysis.test.ts` 两项 20 秒超时、一项 EPIPE；该文件单独复跑 20/20 passed 后，未改代码或时限再次完整运行，结果为 198 passed、14 failed、20 skipped，失败分布在 pr-analysis、management 和 quota。保留这些失败，不用相关文件成功替代完整回归成功；完整回归失败原因尚未确认，不能宣称本次具备合并条件。
+修复前补验收的 `pnpm run typecheck` 通过，三个相关文件 73/73 passed，Spec 独立复跑维护演练 3/3 passed。修复前两轮完整串行回归均未通过：首次为 209 passed、3 failed、20 skipped，`pr-analysis.test.ts` 两项 20 秒超时、一项 EPIPE；该文件单独复跑 20/20 passed 后，未改代码或时限再次完整运行，结果为 198 passed、14 failed、20 skipped，失败分布在 cleanup、management 和 quota。保留这些失败，不用相关文件成功替代完整回归成功；后续诊断及修复后结果见下。
+
+### CLI 超时诊断
+
+将失败缩为既有公开 CLI 用例，未修改断言或 5 秒时限：
+
+```sh
+taskset -c 0 pnpm exec vitest run tests/cleanup.test.ts -t CLI.cancellation --maxWorkers=1 --reporter=verbose
+```
+
+固定同一 CPU 后，`c783cc0` 连续 3 次均超时（5155/5143/5115 ms），基线 `baf3d90` 同样连续 3 次超时（5133/5082/5190 ms）。该超时不依赖新增升级用例。逐段计时显示每次 CLI 启动约 660–710 ms，多次请求累计耗尽预算；客户端沿 `control → roles → provider/MCP` 静态导入了仅服务端需要的运行时。
+
+将配置及执行运行时的导入移至 `serve()`，保留公开命令、socket 协议和记录格式。相同用例连续 3 次通过（1853/1771/1827 ms）。原 cleanup 组合从 2 failed、33 passed、81.90 秒变为 35 passed、69 个名称过滤跳过、44.95 秒。这定位并修复了可复现的 CLI 启动成本问题，不据此断言已经解释历史 EPIPE 或 quota 超时。
+
+修复后类型检查通过；cleanup、management、maintenance-restore 三个完整文件 106/106 passed；独立静态审查 Standards 和 Spec/compatibility 均无发现。主工作树运行 `ORCHESTRATOR_REAL_DOCKER=0 pnpm exec vitest run --no-file-parallelism`，结果为 **12 files passed、212 passed、20 skipped、exit 0**，耗时 266.37 秒。20 项仍是未启用的 opt-in Docker 测试，不计作通过。历史 EPIPE 和 quota 超时在这轮未复现，但尚无独立根因结论。临时计时探针已删除，未修改测试断言或 timeout。
 
 本次没有执行备份回退或证明旧程序能读新表。匹配旧备份恢复和外部副作用核对仍是回退前提。真实模型、容器、远端写入、异机灾备和生产部署未验证；没有新增自动迁移或恢复平台。
 
