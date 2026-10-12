@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { once } from 'node:events';
 import { copyFile, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { afterEach, expect, test } from 'vitest';
 import { call } from '../src/control.js';
 
@@ -35,14 +35,16 @@ async function stop(child: ChildProcess) {
   child.kill('SIGTERM');
   await exited;
 }
-afterEach(async () => {
+afterEach(async ({ task }) => {
   // Let controlled adapters exit normally even if an assertion fails; never leave gate waiters behind.
   await Promise.all(gatesToRelease.splice(0).map(path => writeFile(path, 'release').catch(() => {})));
   await Promise.all(children.splice(0).map(stop));
-  await Promise.all(directories.splice(0).map(directory => rm(directory, { recursive: true, force: true })));
+  const evidenceDirectories = directories.splice(0);
+  if (task.result?.state === 'fail') console.error(JSON.stringify({ evidenceDirectories }));
+  else await Promise.all(evidenceDirectories.map(directory => rm(directory, { recursive: true, force: true })));
 });
 
-async function fixture(app = root) {
+async function fixture(app = root, completionDelay = 0, startupDelay = 0) {
   const configDirectory = await temporary(); const data = await temporary();
   const independent = await temporary(); const repo = await temporary();
   const git = (...args: string[]) => execFileSync('git', ['-C', repo, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
@@ -60,23 +62,27 @@ if(args[0]==='run'){console.log('controlled-container');process.exit(0)}
 const command=args.at(-1)||'';const marker=command.match(/ORCH_EXIT_[a-f0-9]+/);
 if(args[0]!=='exec'||!marker)process.exit(0);
 const key=command.match(/CONTROLLED_KEY_([a-z-]+)/)[1];
+setTimeout(()=>{
 fs.writeFileSync(path.join(home,'started-'+key),'running');
 const timer=setInterval(()=>{
  if(!fs.existsSync(path.join(home,'release-'+key)))return;
  clearInterval(timer);
+ setTimeout(()=>{
  const receipt=JSON.parse(fs.readFileSync(path.join(home,'receipt-'+key),'utf8'));
  const entry={key,executionId:receipt.executionId,at:new Date().toISOString(),artifact:key+'.txt'};
  fs.writeFileSync(path.join(home,key+'.txt'),'local side effect: '+key+'\\n');
  fs.appendFileSync(path.join(home,'audit.jsonl'),JSON.stringify(entry)+'\\n');
  console.log(JSON.stringify({summary:'done',key}));console.log(marker[0]+':0');
+ },${completionDelay});
 },10);
+},${startupDelay});
 `, { mode: 0o700 });
   const config = join(configDirectory, 'config.ts');
   await writeFile(config, `export default {version:'maintenance-local-v1',primaryAgentLimit:1,
 repos:[{id:'local',location:${JSON.stringify(repo)}}],capabilities:[],
 environments:[{id:'env',docker:{image:'controlled:image',binary:${JSON.stringify(binary)},network:'none'}}],
 providers:[{id:'controlled',agent:{name:'controlled',env:{},buildPrintCommand({prompt}){const key=prompt.match(/^fixture-key:([a-z-]+)/)[1];return {command:'CONTROLLED_KEY_'+key}},parseStreamLine(line){return [{type:'result',result:line}]}}}],
-roles:[{id:'report',description:'controlled local write',validate(){},buildPrompt({input}){return 'fixture-key:'+input.key},skills:[],tools:[],validateReport(output){return JSON.parse(output)}}],
+roles:[{id:'report',description:'controlled local write',validate(){},buildPrompt({input}){if(input.key==='start-failed')throw Error('Controlled role preparation failed');return 'fixture-key:'+input.key},skills:[],tools:[],validateReport(output){return JSON.parse(output)}}],
 roleBindings:[{role:'report',provider:'controlled',environment:'env',commit(input){return input.sha}}]};`);
   const service = await start(config, data, undefined, app);
   const submit = async (socket: string, key: string) => {
@@ -91,11 +97,47 @@ roleBindings:[{role:'report',provider:'controlled',environment:'env',commit(inpu
 }
 const show = async (socket: string, id: string) => await call(socket, { command: 'show', id }) as any;
 const manage = (socket: string, command: string, reason: string, target = 'all') => call(socket, { command, target, source: 'operator', reason });
+async function waitForStatus(socket: string, id: string, status: 'completed' | 'cancelled') {
+  let detail: Awaited<ReturnType<typeof show>>;
+  try {
+    // Full role startup and SDK finalization have no one-second completion guarantee.
+    await expect.poll(async () => {
+      detail = await show(socket, id);
+      return detail.execution.status === status || ['completed', 'cancelled', 'resolved', 'start_failed'].includes(detail.execution.status);
+    }, { timeout: 10000 }).toBe(true);
+    expect(detail.execution.status).toBe(status);
+  } catch (error) {
+    const attempt = detail?.attempts.at(-1);
+    const logs = attempt ? await Promise.allSettled(['stdout', 'stderr'].map(stream => readFile(join(dirname(socket), 'attempts', attempt.id, `${stream}.log`), 'utf8'))) : [];
+    console.error(JSON.stringify({ socket, id, detail, logs }));
+    throw error;
+  }
+}
+
+test('maintenance completion wait accepts an adapter that exits after the default poll deadline', async () => {
+  const f = await fixture(root, 1200);
+  const id = await f.submit(f.socket, 'delayed'); await f.release('delayed');
+  await waitForStatus(f.socket, id, 'completed');
+  expect(await show(f.socket, id)).toMatchObject({ attempts: [{ exitCode: 0, contract: 'valid', stopConfirmation: { kind: 'agent-exit-marker' } }] });
+  expect(await call(f.socket, { command: 'logs', id })).toMatchObject({ complete: true });
+  expect((await f.audit()).map(entry => entry.key)).toEqual(['delayed']);
+}, 20000);
+
+test('maintenance completion wait rejects an already failed start without exhausting its timeout', async () => {
+  const f = await fixture();
+  const id = await f.submit(f.socket, 'start-failed');
+  await expect.poll(async () => (await show(f.socket, id)).execution.status, { timeout: 10000 }).toBe('start_failed');
+  expect(await show(f.socket, id)).toMatchObject({ attempts: [{ runState: 'start_failed', error: 'Controlled role preparation failed' }] });
+  const began = performance.now();
+  await expect(waitForStatus(f.socket, id, 'completed')).rejects.toThrow('start_failed');
+  expect(performance.now() - began).toBeLessThan(5000);
+  expect(await f.audit()).toEqual([]);
+}, 30000);
 
 test('old snapshot restore reconciles missing executions against independent local writes before cancelling stale queue and resuming without duplicates', async () => {
   const f = await fixture();
   const saved = await f.submit(f.socket, 'saved'); await f.release('saved');
-  await expect.poll(async () => (await show(f.socket, saved)).execution.status).toBe('completed');
+  await waitForStatus(f.socket, saved, 'completed');
   await manage(f.socket, 'pause', 'prepare backup queue', 'starts');
   const stale = await f.submit(f.socket, 'stale');
   await manage(f.socket, 'pause', 'consistent offline backup');
@@ -114,9 +156,9 @@ test('old snapshot restore reconciles missing executions against independent loc
   const continued = await start(f.config, f.data);
   await f.release('stale');
   await manage(continued.socket, 'resume', 'continue after backup');
-  await expect.poll(async () => (await show(continued.socket, stale)).execution.status).toBe('completed');
+  await waitForStatus(continued.socket, stale, 'completed');
   const missing = await f.submit(continued.socket, 'missing'); await f.release('missing');
-  await expect.poll(async () => (await show(continued.socket, missing)).execution.status).toBe('completed');
+  await waitForStatus(continued.socket, missing, 'completed');
   await manage(continued.socket, 'pause', 'preserve post-backup incident evidence');
   await stop(continued.child);
   const beforeRestore = await f.audit();
@@ -156,7 +198,7 @@ test('old snapshot restore reconciles missing executions against independent loc
 
   // A new completed write is a positive dispatch barrier, not a sleep-based absence check.
   const fresh = await f.submit(service.socket, 'fresh'); await f.release('fresh');
-  await expect.poll(async () => (await show(service.socket, fresh)).execution.status).toBe('completed');
+  await waitForStatus(service.socket, fresh, 'completed');
   expect(await show(service.socket, stale)).toMatchObject({ execution: { status: 'cancelled' }, attempts: [] });
   expect((await f.audit()).map(entry => entry.key)).toEqual(['saved', 'stale', 'missing', 'fresh']);
   expect((await f.audit()).slice(0, 3)).toEqual(beforeRestore);
@@ -165,9 +207,9 @@ test('old snapshot restore reconciles missing executions against independent loc
 }, 30000);
 
 test('maintenance pause preserves a running agent and cooperative cancellation is not stop confirmation', async () => {
-  const f = await fixture();
+  const f = await fixture(root, 0, 1200);
   const id = await f.submit(f.socket, 'live');
-  await expect.poll(async () => readFile(join(f.independent, 'started-live'), 'utf8').catch(() => '')).toBe('running');
+  await expect.poll(async () => readFile(join(f.independent, 'started-live'), 'utf8').catch(() => ''), { timeout: 10000 }).toBe('running');
   await manage(f.socket, 'pause', 'cannot wait indefinitely for local work');
   expect(await show(f.socket, id)).toMatchObject({ execution: { status: 'running' } });
   expect((await show(f.socket, id)).attempts[0].stopConfirmation).toBeUndefined();
@@ -179,7 +221,7 @@ test('maintenance pause preserves a running agent and cooperative cancellation i
   const commands = (await readFile(join(f.independent, 'adapter-calls.jsonl'), 'utf8')).trim().split('\n').map(line => JSON.parse(line));
   expect(commands.every(args => ['run', 'exec'].includes(args[0]))).toBe(true);
   await f.release('live');
-  await expect.poll(async () => (await show(f.socket, id)).execution.status).toBe('cancelled');
+  await waitForStatus(f.socket, id, 'cancelled');
   expect((await show(f.socket, id)).attempts[0].stopConfirmation.kind).toBe('agent-exit-marker');
   expect(await call(f.socket, { command: 'maintenance' })).toMatchObject({ startsPaused: true, admissionPaused: true });
 }, 20000);
@@ -195,7 +237,7 @@ test('upgrade from pre-maintenance application preserves old configuration and e
   const configBytes = await readFile(f.config);
   const configSha256 = createHash('sha256').update(configBytes).digest('hex');
   const saved = await f.submit(f.socket, 'old'); await f.release('old');
-  await expect.poll(async () => (await show(f.socket, saved)).execution.status).toBe('completed');
+  await waitForStatus(f.socket, saved, 'completed');
   const oldDetail = await show(f.socket, saved);
   expect(oldDetail.attempts[0].configVersion).toBe('maintenance-local-v1');
   const oldLogs = await call(f.socket, { command: 'logs', id: saved }) as any;
@@ -228,7 +270,7 @@ test('upgrade from pre-maintenance application preserves old configuration and e
   expect(await call(upgraded.socket, { command: 'maintenance' })).toMatchObject({ admissionPaused: false, startsPaused: false });
   const upgradeMilliseconds = Math.round(performance.now() - upgradeBegan);
   const fresh = await f.submit(upgraded.socket, 'upgraded'); await f.release('upgraded');
-  await expect.poll(async () => (await show(upgraded.socket, fresh)).execution.status).toBe('completed');
+  await waitForStatus(upgraded.socket, fresh, 'completed');
   expect((await show(upgraded.socket, fresh)).attempts[0].configVersion).toBe('maintenance-local-v1');
   expect((await f.audit()).map(entry => entry.key)).toEqual(['old', 'upgraded']);
   expect(await show(upgraded.socket, saved)).toEqual(oldDetail);
