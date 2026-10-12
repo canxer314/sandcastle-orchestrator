@@ -104,6 +104,31 @@ beta 原模型实现只有 [Draft PR #2](https://github.com/canxer314/issue-29-b
 
 主环境 typecheck 通过。相关回归首批 7 files 为 122 passed、20 skipped、61.41 秒；management/agent/role-tools/roles 四文件为 86 passed、70.36 秒。首次全套为 211 passed、20 skipped、1 failed、76.65 秒。唯一失败在 `maintenance-restore.test.ts:98`，初始 saved 执行等待 completed 超时，实际仍 running；第 99 行 pause 尚未执行，所以失败发生在 pause、backup、restore 之前，不能据此判定维护恢复功能失效。当时有并行测试负载，但未证明根因。未改源码、断言或 timeout，后续维护单文件 3 passed、7.70 秒，完整复验 12 files、212 passed、20 skipped、73.21 秒。两份原始复验输出仅显示 `$ vitest run tests/maintenance-restore.test.ts` 与 `$ vitest run`，未保存完整启动 argv，不能确认 `--no-file-parallelism` 生效；原先“串行复验”的说法撤回。复验通过不是修复证明。[独立记录 #49](https://github.com/canxer314/sandcastle-orchestrator/issues/49) 关联 #27/#29，仅保留事实，根因未知，本轮不开展诊断或产品修复。20 个 opt-in Docker 测试未启用，不计为通过。本轮真实容器场景单独记录，不用默认 suite 替代。
 
+### 后续维护回归补验收
+
+2026-10-12，[PR #51](https://github.com/canxer314/sandcastle-orchestrator/pull/51) 在另行授权的本地诊断与测试修复范围内补强维护等待；测试提交为 `327c255df4d68ac56e679f1b46b4d94647b0fb61`，基线为 `c168eccf826532fab08f48cb4b9890e3af135084`。Node `24.21.0`、pnpm `12.3.4`、Vitest `5.0.3`。本次只修改维护测试与两份既有验收记录，不新增产品行为，不改协议、持久化或全局 timeout。它不替代 #29 的真实联合验收，不修改先前运行的事实或其 argv 限制。
+
+- [x] 受控完成延迟超过默认 poll 期限时先 red；显式局部 10000ms 等待后 green；加载时回退为一秒再次 red。
+- [x] 启动前延迟 1200ms 时，默认一秒检查在 pause 前因 `started-live` 尚未出现而 red；显式启动预算后 green；加载时回退再次 red。仍等待真实适配器启动。
+- [x] 经真实服务/socket 确认 `start_failed` 后开始计时，旧等待耗约 10005ms，五秒检查 red；终态短路后 green；加载时恢复旧逻辑后再次 red。五秒检查不含服务冷启动或准备，不是产品性能承诺；`unknown` 仍继续等待真实退出确认。
+- [x] 原维护暂停、协作取消、独立审计、旧快照恢复与跨版本升级断言保留；失败证据读取缓存 detail 和本地日志，16 个第二轮失败目录已确认保留。最终只读审查未发现正确性缺陷，仅一项可选等价简化，未应用。
+
+最终测试版本的验证如下。相关回归结束后才启动完整套件，未并行叠加多轮全套；每份本地输出保存完整命令和 exit code。
+
+| 命令 | 结果 |
+| --- | --- |
+| `pnpm run typecheck` | 通过，exit 0 |
+| `ORCHESTRATOR_REAL_DOCKER=0 pnpm exec vitest run tests/maintenance-restore.test.ts --no-file-parallelism` | 1 file，5 passed，11.84 秒，exit 0 |
+| `ORCHESTRATOR_REAL_DOCKER=0 pnpm exec vitest run tests/maintenance-restore.test.ts tests/management.test.ts tests/quota.test.ts tests/roles.test.ts --no-file-parallelism` | 4 files，101 passed，141.13 秒，exit 0 |
+| `ORCHESTRATOR_REAL_DOCKER=0 pnpm exec vitest run --no-file-parallelism` | 12 files，214 passed / 20 skipped，270.01 秒，exit 0 |
+| `git diff --check` | 通过 |
+
+20 个 opt-in Docker 测试仍 skipped，不计通过；本轮没有调用真实模型、容器或业务远端写入。较早一次审查全套曾在 `tests/pr-analysis.test.ts:97` 失败，为 212 passed / 1 failed / 20 skipped，未确认与维护测试 diff 有因果关系，未借本票修改该测试；最终通过不抹除这次失败。
+
+原始日志、配置和 session 不上传。私有本地证据为 `/tmp/issue-49-tdd-NitBih/` 与 `/tmp/issue-49-review-tdd-6gw4J6/`，临时留存不保证长期归档。受控诊断复现了一秒等待先于自然完成的竞态，但 [#49](https://github.com/canxer314/sandcastle-orchestrator/issues/49) 原事故的 DATA 和细分时序缺失，不能把新复现追溯为历史事故已证明修复，因此 #49 保持打开。#27/#29 已有验收项及关闭状态不变，只补充本轮受控回归证据。
+
+合并前补充文档后再次 typecheck 通过。首次相关四文件复验为 100 passed / 1 failed，122.45 秒，exit 1；唯一失败在未修改的 `tests/quota.test.ts:100`，SQLite/tar 恢复用例的初始 saved 等待 received running / expected completed，发生在 pause 和备份之前。本轮完整套件因此未启动。保留原输出，不归因为本 PR，也不借本 PR 扩大 timeout 或修改额度测试。随后原样单跑该用例为 1 passed / 12 名称过滤 skipped，1.99 秒，exit 0，不把单跑成功当成根因已确定。未改代码、测试参数或 timeout，再次依次执行同样的相关回归和完整套件：相关四文件 101 passed，123.23 秒，exit 0；完整套件 12 files、214 passed / 20 skipped，265.20 秒，exit 0。补文档后的 typecheck 和 `git diff --check` 也通过。合并前复验输出在 `/tmp/pr-51-delivery-UryWzC/`，原始失败输出同目录保留，后续通过不证明该 quota 失败已定位或修复。
+
 ## 收尾
 
 补验收主 Agent 另行执行 `pnpm run typecheck`，通过；显式 `pnpm exec vitest run tests/management.test.ts tests/roles.test.ts --no-file-parallelism` 为 2 files、83 passed、107.70 秒、exit 0。本轮显式 `pnpm exec vitest run --no-file-parallelism` 第一次因执行工具后台 120 秒上限而终止，不是测试断言失败，也不计通过；原输出 `/tmp/issue-29-supplement-full-regression.txt` 保留。未改源码或测试 timeout，以 600 秒工具时限执行同一全套命令，结果 12 files、212 passed、20 skipped、278.45 秒、exit 0，输出 `/tmp/issue-29-supplement-full-regression-retry.txt`。这是新一轮有明确 argv 的串行证据，不追溯证明旧复验参数。类型及 management/roles 输出由主会话保留，相关回归文件 `/tmp/claude-1000/-home-canxer-repos-sandcastle-orchestrator/ebde5ec5-eab3-4c10-85b2-3c69cc50d1a1/tasks/bitjs4xqq.output`。20 skipped 不计通过，本次真实分析仍单独记录。
