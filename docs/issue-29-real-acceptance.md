@@ -4,7 +4,7 @@
 
 2026-10-12，在应用基线 `a88f56282c897d6133b8430cf808d5704d8b11ec` 完成两个临时 repo 的真实指定 commit 测试、Issue 实现到 Draft PR，以及同一只读分析角色跨 repo 复用。本轮只新增验收记录，没有修改产品功能、协议或持久化格式。已检查 README，不需要修改公共行为说明或 changeset。
 
-真实样例通过不代表 #29 所有场景都重新做过真实演练。配额、未知结果、故障、清理、通知及维护恢复复用现有受控测试；已有 MCP 服务的真实接入复用 #23 历史记录。本文分别记录这些证据。首次全套回归有一项超时，串行复验通过，根因未确定。没有关闭 #29，也没有发布产品分支。
+真实样例通过不代表 #29 所有场景都重新做过真实演练。配额、未知结果、故障、清理、通知及维护恢复复用现有受控测试；已有 MCP 服务的真实接入复用 #23 历史记录。本文分别记录这些证据。首次全套回归有一项超时，后续复验通过，但原始输出没有完整启动 argv，不能确认其串行参数，也不能作为串行证明。根因未确定，独立记录于 [#49](https://github.com/canxer314/sandcastle-orchestrator/issues/49)。没有关闭 #29，也没有发布产品分支。
 
 ## 授权与环境
 
@@ -63,6 +63,22 @@
 
 配置版本均为 `issue-29-real-a88f562-analysis-v1`。两份报告自然 completed、valid、exit 0，模型均自主调用 PR #2/#3 快照工具。公开 `artifact` 分别读取 `observations.jsonl` 和 `report.txt`，保留事实与推断的区分。独立判断报告引用了快照版本、digest、缺失项和不同 SHA，区分 PR #2 的报告测试与 PR #3 缺少测试回执，不捏造跨 PR 共性产品 bug。模型最初读取不存在路径获得真实错误后，改用已部署 MCP 工具。
 
+### 后续最小补验收，beta 分析自己的 PR
+
+上述 beta 历史分析发生在其实现 PR 创建之前，分析对象仍是 alpha PR #2/#3，只证明角色跨 checkout 复用，不满足 beta 自己的测试、实现、分析时间顺序。历史报告及快照不改写为新证据。
+
+补验收启动时，子 Agent 最初仍受 worktree 环境限制，立即报告且没有执行任何工具。运行时随后将主目录更新为 `/home/canxer/repos/sandcastle-orchestrator`；第一次 `pwd` 与 Git 状态检查成功后才继续。主 Agent 确认无人并发执行 beta 分析或 fixture 写入，并独占完成本次补验收。没有修改权限设置或绕过拒绝。
+
+beta 原模型实现只有 [Draft PR #2](https://github.com/canxer314/issue-29-beta-a6e3/pull/2)，创建于 `2026-10-12T03:33:32Z`。管理员随后创建文档对照 [Draft PR #3](https://github.com/canxer314/issue-29-beta-a6e3/pull/3)，创建及更新时间 `2026-10-12T04:09:28Z`，head `0613dfd20c0d34c67d08ccd9fd61024bf425dbcb`。对照仅新增 REVIEW-NOTES.md，正文及文件明确非模型实现、未提供测试回执，不冒充第二次实现或产品验收；创建后立即登记线程。
+
+管理员实际采集 beta #2/#3 metadata、reviews 和完整 diff，快照版本 `issue-29-beta-github-export-v2`，采集时间 `2026-10-12T04:09:46.164Z`，SHA-256 `d3675027af71ec74c9d14d993490a28a06cde65a65287fd1f4db0ecba3293347`。两份均 `truncated:false`，reviews 为空；inline review threads、checks and CI logs、Issue discussion 均缺失。工具仍明确 `verifiedAgainstGitHub:false`，管理员导出不等于工具实时独立验证。
+
+新私有配置及证据为 `/tmp/issue-29-supplement-a6e3/`，DATA/session 为独立的 `/tmp/issue-29-supplement-data-a6e3/`，配置版本 `issue-29-real-a88f562-beta-analysis-v2`。复用现有 role、tool、provider、internal Docker 网络及镜像；只登记 beta，只读且移除 publication，scope 仅 beta #2/#3。第一次 serve 因 DATA 放在配置目录下被产品边界检查拒绝，尚未提交请求或调用模型；改为独立 DATA 后启动成功。这是验收配置错误，不是产品修复。
+
+只经公开 CLI `serve/submit/show/logs/artifact` 提交一次新 beta 分析，没有重试或补模型调用。请求 `99f1c28b-0edd-4440-b4db-546fdad85c4b`，execution `744e5f04-bcf7-4a23-ace6-cbce1e376acd`，attempt `934e3f61-6650-42a8-8d62-a40984ef1a6a`。请求接纳于 `2026-10-12T04:10:43.361Z`，尝试开始 `04:10:43.377Z`，自然结束 `04:12:17.797Z`，94.420 秒。请求、selected SHA、actual SHA 均为 beta 基线 `899b751eda555051f0e0cbe9fc4335667b7fc31d`，workspaceMode readonly，completed、contract valid、exit 0，真实 agent-exit-marker 保存；正常结束不代替业务判断。
+
+公开 observations 记录模型在 `04:11:02.547Z` 与 `04:11:06.134Z` 自主分别读取 beta #2 和 #3。公开 report.txt 为 7,256 字节，完整且未截断。`2026-10-12T04:13:46.695Z` 独立核对两份工具观察、摘要与报告，确认报告区分 PR #2 的测试叙述与其未提供原始回执、PR #3 的管理员对照及无测试回执，也明确双方缺少 review threads、CI logs、Issue discussion。报告只交付有根据的证据共性，没有编造共性产品 bug，没有把 checkout 基线冒充两个 PR head，没有把未见失败当成所有测试通过。其判断只适用于所采集的小型文档 fixture，不是通用代码质量证明。beta 自己的指定 commit 测试、模型实现 PR #2、分析 beta #2/#3 至此按时间顺序完成；alpha 既有同序证据保留。
+
 ## 容器与访问边界
 
 真实测试容器 network none，`/workspace` 只读，只有 `/artifacts` 可写，没有模型或 GitHub 认证环境。模型容器使用 internal 网络 `10.231.19.0/28`，只经本次 gateway relay 到已有 loopback provider。真实连接 `1.1.1.1:443` 返回 ENETUNREACH；这是一项边界探针，不证明所有网络路径均已审计。
@@ -86,13 +102,15 @@
 
 这些故障测试使用受控 provider/执行适配器。SQLite/tar 恢复确实操作本地数据，但不代表真实运行模型的崩溃恢复演练。已有 MCP 服务的真实原契约接入与其他历史验证见 `docs/issue-23-real-acceptance.md` 等记录，本轮没有重新跑真实已有 MCP 服务。
 
-主环境 typecheck 通过。相关回归首批 7 files 为 122 passed、20 skipped、61.41 秒；management/agent/role-tools/roles 四文件为 86 passed、70.36 秒。首次全套为 211 passed、20 skipped、1 failed、76.65 秒，`maintenance-restore.test.ts` 等待 completed 超时，实际仍 running；当时有并行测试负载，但未证明根因。串行维护单测 3 passed、7.70 秒；串行全套 12 files、212 passed、20 skipped、73.21 秒。20 个 opt-in Docker 测试未启用，不计为通过。本轮真实容器场景单独记录，不用默认 suite 替代。
+主环境 typecheck 通过。相关回归首批 7 files 为 122 passed、20 skipped、61.41 秒；management/agent/role-tools/roles 四文件为 86 passed、70.36 秒。首次全套为 211 passed、20 skipped、1 failed、76.65 秒。唯一失败在 `maintenance-restore.test.ts:98`，初始 saved 执行等待 completed 超时，实际仍 running；第 99 行 pause 尚未执行，所以失败发生在 pause、backup、restore 之前，不能据此判定维护恢复功能失效。当时有并行测试负载，但未证明根因。未改源码、断言或 timeout，后续维护单文件 3 passed、7.70 秒，完整复验 12 files、212 passed、20 skipped、73.21 秒。两份原始复验输出仅显示 `$ vitest run tests/maintenance-restore.test.ts` 与 `$ vitest run`，未保存完整启动 argv，不能确认 `--no-file-parallelism` 生效；原先“串行复验”的说法撤回。复验通过不是修复证明。[独立记录 #49](https://github.com/canxer314/sandcastle-orchestrator/issues/49) 关联 #27/#29，仅保留事实，根因未知，本轮不开展诊断或产品修复。20 个 opt-in Docker 测试未启用，不计为通过。本轮真实容器场景单独记录，不用默认 suite 替代。
 
 ## 收尾
 
+补验收主 Agent 另行执行 `pnpm run typecheck`，通过；显式 `pnpm exec vitest run tests/management.test.ts tests/roles.test.ts --no-file-parallelism` 为 2 files、83 passed、107.70 秒、exit 0。本轮显式 `pnpm exec vitest run --no-file-parallelism` 第一次因执行工具后台 120 秒上限而终止，不是测试断言失败，也不计通过；原输出 `/tmp/issue-29-supplement-full-regression.txt` 保留。未改源码或测试 timeout，以 600 秒工具时限执行同一全套命令，结果 12 files、212 passed、20 skipped、278.45 秒、exit 0，输出 `/tmp/issue-29-supplement-full-regression-retry.txt`。这是新一轮有明确 argv 的串行证据，不追溯证明旧复验参数。类型及 management/roles 输出由主会话保留，相关回归文件 `/tmp/claude-1000/-home-canxer-repos-sandcastle-orchestrator/ebde5ec5-eab3-4c10-85b2-3c69cc50d1a1/tasks/bitjs4xqq.output`。20 skipped 不计通过，本次真实分析仍单独记录。
+
 所有本次模型和工具自然结束后，对 implementation service、analysis service 和本次 relay 的精确 PID 发 SIGTERM。进程消失，两管理 socket 查询 ENOENT，relay 连接 ECONNREFUSED，原 CC-Switch loopback 服务仍监听。核对结果见 `shutdown-check.txt`。后台退出通知属于计划收尾，不是实测异常崩溃。
 
-四个模型容器保留 idle shell/sleep，无 Claude/MCP 进程；已结束测试容器也保留。没有删除容器、远端 fixture 或证据，没有强杀模型制造通过。这不证明所有潜在子进程和远端工作已停止。
+四个原模型容器保留 idle shell/sleep，无 Claude/MCP 进程；已结束测试容器也保留。补验收新增容器 `orch-934e3f61-6650-42a8-8d62-a40984ef1a6a-1` 自然结束后只剩 shell/sleep。仅对本次 service PID `750547` 和 relay PID `736819` 发 SIGTERM；`2026-10-12T04:13:58.854Z` 核对 PID 均消失、control.sock ENOENT、relay ECONNREFUSED，原 provider 的 loopback `127.0.0.1:15721` 仍监听。证据为补验收目录 `container-processes.txt`、`shutdown-check.txt`，未动旧部署或 provider。没有删除容器、远端 fixture 或证据，没有强杀模型制造通过。这不证明所有潜在子进程和远端工作已停止。
 
 ## 原始证据与限制
 
@@ -100,4 +118,4 @@
 
 操作中曾误用 management.sock，得到 ENOENT；改用服务实际公布的 control.sock 后才接纳任务。beta fixture 初始人工 push 缺 credential helper 失败，随后用命令局部 helper 成功，没有修改全局 Git 配置。这些是验收操作错误，不记为产品缺陷。
 
-本次规模为两个小型文档 fixture，两个实现调用和两个分析调用。不能推断一般代码实现质量、高可用、全机资源保障、所有 provider、全部子进程停止或端到端 exactly-once。真实运行中控制服务崩溃、真实未知远端副作用、旧备份回退和所有故障组合没有重做；只能引用相应受控或历史证据。首次回归超时保留为未确定根因的发现，不能声称已修复。需要继续真实已有 MCP 或更大业务样例时，应另行记录实际证据，不扩大本票产品实现范围。
+本次规模为两个小型文档 fixture，两个实现调用和三个分析调用；其中原 beta 分析只分析 alpha 材料，新 beta 分析才覆盖 beta 自身 PR 且在实现后发生。补验收原始 CLI 回执、快照、metadata/diff、独立检查与收尾证据在 `/tmp/issue-29-supplement-a6e3/`，DATA/session 在 `/tmp/issue-29-supplement-data-a6e3/`，均为私有临时目录，不承诺长期归档。线程最终 PR 登记核对有四份 open Draft PR，alpha #2/#3 与 beta #2/#3，全部已 link。不能推断一般代码实现质量、高可用、全机资源保障、所有 provider、全部子进程停止或端到端 exactly-once。真实运行中控制服务崩溃、真实未知远端副作用、旧备份回退和所有故障组合没有重做；只能引用相应受控或历史证据。首次回归超时保留为未确定根因的发现，不能声称已修复。需要继续真实已有 MCP 或更大业务样例时，应另行记录实际证据，不扩大本票产品实现范围。
