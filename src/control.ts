@@ -4,15 +4,16 @@ import { join } from 'node:path';
 import { acquireControlLock } from './lock.js';
 import { checkDataSeparation, checkToolEvidenceDirectories } from './paths.js';
 import { Records } from './records.js';
-import { executeRole } from './roles.js';
-import { execute, readArtifact, cancelExecution } from './execution.js';
 import { open } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { serviceLog } from './service-log.js';
-import { loadConfiguration, type Submission } from './config.js';
+import type { Submission } from './config.js';
 
 export async function serve(data: string, configPath: string, maintenanceMode = 'normal') {
   if (!['normal', 'paused', 'restore'].includes(maintenanceMode)) throw Error('Invalid startup maintenance mode');
+  const { loadConfiguration } = await import('./config.js');
+  const { executeRole } = await import('./roles.js');
+  const { execute, readArtifact, cancelExecution } = await import('./execution.js');
   const config = await loadConfiguration(configPath);
   await checkDataSeparation(data, configPath, config);
   process.umask(0o077);

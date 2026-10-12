@@ -1,6 +1,7 @@
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { once } from 'node:events';
-import { copyFile, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { copyFile, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterEach, expect, test } from 'vitest';
@@ -15,8 +16,8 @@ async function temporary() {
   directories.push(directory);
   return directory;
 }
-async function start(config: string, data: string, maintenance?: string) {
-  const child = spawn(process.execPath, ['--import', 'tsx', 'src/cli.ts', 'serve', '--config', config, '--data', data, ...(maintenance ? ['--maintenance', maintenance] : [])], { cwd: root });
+async function start(config: string, data: string, maintenance?: string, app = root) {
+  const child = spawn(process.execPath, ['--import', 'tsx', 'src/cli.ts', 'serve', '--config', config, '--data', data, ...(maintenance ? ['--maintenance', maintenance] : [])], { cwd: app });
   children.push(child);
   await new Promise<void>((resolve, reject) => {
     let output = ''; let errors = '';
@@ -41,7 +42,7 @@ afterEach(async () => {
   await Promise.all(directories.splice(0).map(directory => rm(directory, { recursive: true, force: true })));
 });
 
-async function fixture() {
+async function fixture(app = root) {
   const configDirectory = await temporary(); const data = await temporary();
   const independent = await temporary(); const repo = await temporary();
   const git = (...args: string[]) => execFileSync('git', ['-C', repo, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
@@ -77,7 +78,7 @@ environments:[{id:'env',docker:{image:'controlled:image',binary:${JSON.stringify
 providers:[{id:'controlled',agent:{name:'controlled',env:{},buildPrintCommand({prompt}){const key=prompt.match(/^fixture-key:([a-z-]+)/)[1];return {command:'CONTROLLED_KEY_'+key}},parseStreamLine(line){return [{type:'result',result:line}]}}}],
 roles:[{id:'report',description:'controlled local write',validate(){},buildPrompt({input}){return 'fixture-key:'+input.key},skills:[],tools:[],validateReport(output){return JSON.parse(output)}}],
 roleBindings:[{role:'report',provider:'controlled',environment:'env',commit(input){return input.sha}}]};`);
-  const service = await start(config, data);
+  const service = await start(config, data, undefined, app);
   const submit = async (socket: string, key: string) => {
     gatesToRelease.push(join(independent, 'release-'+key));
     const receipt = await call(socket, { command: 'submit', submission: { repo: 'local', capability: 'report', input: { key, sha }, source: 'maintenance-drill' } }) as { executionId: string };
@@ -182,3 +183,54 @@ test('maintenance pause preserves a running agent and cooperative cancellation i
   expect((await show(f.socket, id)).attempts[0].stopConfirmation.kind).toBe('agent-exit-marker');
   expect(await call(f.socket, { command: 'maintenance' })).toMatchObject({ startsPaused: true, admissionPaused: true });
 }, 20000);
+
+test('upgrade from pre-maintenance application preserves old configuration and evidence while paused until explicit resume', async () => {
+  const oldRevision = '806ff4c74af8073d85efea2e0e7bfc61ecd07f8a';
+  const targetRevision = execFileSync('git', ['-C', root, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+  const oldApp = await temporary();
+  const archive = execFileSync('git', ['-C', root, 'archive', oldRevision]);
+  execFileSync('tar', ['-C', oldApp, '-xf', '-'], { input: archive });
+  await symlink(join(root, 'node_modules'), join(oldApp, 'node_modules'), 'dir');
+  const f = await fixture(oldApp);
+  const configBytes = await readFile(f.config);
+  const configSha256 = createHash('sha256').update(configBytes).digest('hex');
+  const saved = await f.submit(f.socket, 'old'); await f.release('old');
+  await expect.poll(async () => (await show(f.socket, saved)).execution.status).toBe('completed');
+  const oldDetail = await show(f.socket, saved);
+  expect(oldDetail.attempts[0].configVersion).toBe('maintenance-local-v1');
+  const oldLogs = await call(f.socket, { command: 'logs', id: saved }) as any;
+  expect(oldLogs).toMatchObject({ availability: 'available', complete: true });
+  expect(oldLogs.stdout).toContain('"key":"old"');
+  const oldArtifact = await call(f.socket, { command: 'artifact', id: saved, name: 'report.txt' }) as any;
+  expect(JSON.parse(Buffer.from(oldArtifact.content, 'base64').toString())).toEqual({ summary: 'done', key: 'old' });
+  // Old application has no pause command: wait for trusted completion, stop
+  // its sole control writer, then back up offline before replacing the app.
+  await stop(f.child);
+  const backup = await temporary();
+  const backupPoint = new Date().toISOString();
+  execFileSync('sqlite3', [join(f.data, 'records.sqlite'), `.backup '${join(backup, 'records.sqlite')}'`]);
+  expect(execFileSync('sqlite3', [join(backup, 'records.sqlite'), 'PRAGMA integrity_check;'], { encoding: 'utf8' }).trim()).toBe('ok');
+  execFileSync('tar', ['--exclude=control.sock', '--exclude=control.lock', '--exclude=records.sqlite', '--exclude=records.sqlite-wal', '--exclude=records.sqlite-shm', '-C', f.data, '-cpf', join(backup, 'evidence.tar'), '.']);
+  execFileSync('tar', ['-C', f.configDirectory, '-cpf', join(backup, 'config.tar'), '.']);
+  const backupCompletedAt = new Date().toISOString();
+  const upgradeBegan = performance.now();
+  // Upgrade over ORIGINAL data/config, not a same-version snapshot restore.
+  const upgraded = await start(f.config, f.data, 'paused');
+  expect(await call(upgraded.socket, { command: 'maintenance' })).toMatchObject({ admissionPaused: true, startsPaused: true });
+  expect(await readFile(f.config)).toEqual(configBytes);
+  expect(await show(upgraded.socket, saved)).toEqual(oldDetail);
+  expect((await call(upgraded.socket, { command: 'list' }) as any[]).map(detail => detail.execution.id)).toEqual([saved]);
+  expect(await call(upgraded.socket, { command: 'logs', id: saved })).toEqual(oldLogs);
+  expect(await call(upgraded.socket, { command: 'artifact', id: saved, name: 'report.txt' })).toEqual(oldArtifact);
+  await expect(f.submit(upgraded.socket, 'blocked')).rejects.toThrow('Admission is paused');
+  expect((await f.audit()).map(entry => entry.key)).toEqual(['old']);
+  await manage(upgraded.socket, 'resume', 'old configuration, completed record, logs and report checked after offline backup');
+  expect(await call(upgraded.socket, { command: 'maintenance' })).toMatchObject({ admissionPaused: false, startsPaused: false });
+  const upgradeMilliseconds = Math.round(performance.now() - upgradeBegan);
+  const fresh = await f.submit(upgraded.socket, 'upgraded'); await f.release('upgraded');
+  await expect.poll(async () => (await show(upgraded.socket, fresh)).execution.status).toBe('completed');
+  expect((await show(upgraded.socket, fresh)).attempts[0].configVersion).toBe('maintenance-local-v1');
+  expect((await f.audit()).map(entry => entry.key)).toEqual(['old', 'upgraded']);
+  expect(await show(upgraded.socket, saved)).toEqual(oldDetail);
+  console.log(JSON.stringify({ drill: 'issue-27-cross-version-upgrade', performedAt: new Date().toISOString(), oldRevision, targetRevision, configVersion: 'maintenance-local-v1', configSha256, backupPoint, backupCompletedAt, upgradeMilliseconds, savedExecution: saved, freshExecution: fresh, reads: ['unchanged config bytes', 'list', 'show unchanged completed record', 'logs unchanged and complete', 'report.txt unchanged'], intervention: 'waited for completed old execution; stopped old writer; offline sqlite3/tar backup and integrity check; started new application paused on original data; checked evidence; explicit operator resume', limitations: 'local git archive and existing dependency symlink; temporary local disk; controlled provider/Docker; no install, network, model, container or remote writes; no rollback or production RTO claim' }));
+}, 30000);
