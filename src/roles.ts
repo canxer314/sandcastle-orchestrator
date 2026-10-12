@@ -11,7 +11,8 @@ import type { Records } from './records.js';
 import { git, snapshot, cancelExecution } from './execution.js';
 import { runAgent } from './agent.js';
 import { serveRoleTools } from './role-tools.js';
-import { openRoleTools, configureClaudeMcp, prepareMcp } from './mcp.js';
+import { openRoleTools } from './mcp.js';
+import { configureClaudeMcp, prepareMcp } from './native-mcp.js';
 const execFileAsync=promisify(execFile);
 
 export async function executeRole(records:Records, config:Configuration, executionId:string, data:string) {

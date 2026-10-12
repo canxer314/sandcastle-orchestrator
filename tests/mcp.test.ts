@@ -7,6 +7,13 @@ import { afterEach, expect, test } from 'vitest';
 import { Client } from '@modelcontextprotocol/client';
 import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
 import { call } from '../src/control.js';
+import { configureClaudeMcp, prepareMcp } from '../src/mcp.js';
+import { configureClaudeMcp as nativeConfigureClaudeMcp, prepareMcp as nativePrepareMcp } from '../src/native-mcp.js';
+
+test('legacy MCP exports retain native helper identity',()=>{
+ expect(configureClaudeMcp).toBe(nativeConfigureClaudeMcp);
+ expect(prepareMcp).toBe(nativePrepareMcp);
+});
 const root=resolve(import.meta.dirname,'..');const dirs:string[]=[];const children:ChildProcess[]=[];
 afterEach(async()=>{for(const child of children.splice(0)){if(child.exitCode===null){const ended=once(child,'exit');child.kill();await ended}}for(const dir of dirs.splice(0))await rm(dir,{recursive:true,force:true})});
 async function temporary(){const dir=await mkdtemp(join(tmpdir(),'orch-mcp-'));dirs.push(dir);return dir}
