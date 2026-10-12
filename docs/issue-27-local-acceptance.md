@@ -10,7 +10,7 @@
 pnpm exec vitest run tests/maintenance-restore.test.ts --disableConsoleIntercept --reporter=verbose
 ```
 
-需要主机已有 Git、SQLite CLI 和 tar。本次使用 Node `24.21.0`、pnpm `12.3.4`、SQLite CLI `3.46.1`、GNU tar `1.35`。测试使用独立临时目录，结束后清理。备份频率配置为手动按需、每次受控升级前，没有部署 timer。生产频率、保留期、异机复制和告警仍由管理员配置。
+需要主机已有 Git、SQLite CLI 和 tar。本次使用 Node `24.21.0`、pnpm `12.3.4`、SQLite CLI `3.46.1`、GNU tar `1.35`。测试使用独立临时目录，成功后清理，失败时保留证据目录并输出路径。备份频率配置为手动按需、每次受控升级前，没有部署 timer。生产频率、保留期、异机复制和告警仍由管理员配置。
 
 ## 备份之后的实际写入
 
@@ -83,6 +83,22 @@ taskset -c 0 pnpm exec vitest run tests/cleanup.test.ts -t CLI.cancellation --ma
 修复后类型检查通过；cleanup、management、maintenance-restore 三个完整文件 106/106 passed；独立静态审查 Standards 和 Spec/compatibility 均无发现。主工作树运行 `ORCHESTRATOR_REAL_DOCKER=0 pnpm exec vitest run --no-file-parallelism`，结果为 **12 files passed、212 passed、20 skipped、exit 0**，耗时 266.37 秒。20 项仍是未启用的 opt-in Docker 测试，不计作通过。历史 EPIPE 和 quota 超时在这轮未复现，但尚无独立根因结论。临时计时探针已删除，未修改测试断言或 timeout。
 
 本次没有执行备份回退或证明旧程序能读新表。匹配旧备份恢复和外部副作用核对仍是回退前提。真实模型、容器、远端写入、异机灾备和生产部署未验证；没有新增自动迁移或恢复平台。
+
+## 维护等待回归补验收
+
+2026-10-12，另行授权的本地诊断与测试修复交付于 [PR #51](https://github.com/canxer314/sandcastle-orchestrator/pull/51)，测试提交为 `327c255df4d68ac56e679f1b46b4d94647b0fb61`。本次只补强维护测试和验收记录，不改产品源码、CLI/socket 协议、持久化格式、完成或停止确认语义，也不重开 #27。
+
+对应既有验收项核对如下：
+
+- [x] 旧快照恢复、独立写入审计、取消陈旧队列、人工核对后恢复及跨版本暂停升级断言全部保留，完整维护文件 5/5 passed。
+- [x] 受控适配器正常启动和完成各延迟 1200ms，先以默认一秒 poll 产生 red，再以局部 10000ms 生命周期预算产生 green。启动仍以真实 `started-live` 文件为检查点，不用提前记录的 execution running 代替。
+- [x] 已确认的 `start_failed` 不再等满十秒；不匹配终态立即失败，目标状态仍精确断言。原协作取消用例继续验证 `unknown → cancelled`，不把协作请求当作停止确认。
+- [x] 失败时保留临时证据目录，读取缓存 detail 和本地日志，避免额外无期限 socket 请求；成功时清理。第二轮 red 与加载时回退共 16 个失败目录已逐一确认保留。
+- [x] 测试提交版本的类型检查、相关 CLI/socket 四文件 101 passed、最终显式串行全套 214 passed / 20 skipped。完整命令、耗时及合并前补文档后复验进展见 [#29 验收记录的后续维护回归](issue-29-real-acceptance.md)。20 个 opt-in Docker skipped 不计为通过。
+
+三项等待回归分别经加载时回退再次 red，最终代码审查未发现正确性缺陷。上述测试证明等待契约及维护断言在受控场景下成立，不证明 [#49](https://github.com/canxer314/sandcastle-orchestrator/issues/49) 的历史首次事故必然同因或已修复；原事故缺少 DATA 和细分时序，仍待独立证据。较早审查全套的 `pr-analysis.test.ts:97` 失败也保留在 #29 补充记录，不据后续通过撤回。
+
+本次未执行新的真实模型、容器、业务远端写入、备份回退或生产验收。原有真实 SQLite/tar 演练和回退限制不变，失败目录的本地临时留存不承诺长期归档。
 
 ## 人工介入和限制
 
