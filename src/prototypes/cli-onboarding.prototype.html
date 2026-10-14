@@ -1,0 +1,210 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CLI 首次使用流程原型</title>
+<style>
+  :root { color-scheme: light; font-family: system-ui, sans-serif; color: #17212e; background: #f3f5f7; }
+  * { box-sizing: border-box; }
+  body { margin: 0; }
+  main { max-width: 1160px; margin: auto; padding: 28px 24px; }
+  h1 { font-size: 27px; margin: 8px 0; } h2 { font-size: 16px; margin: 0 0 12px; }
+  p { line-height: 1.65; } .intro { max-width: 850px; color: #536071; margin: 8px 0 18px; }
+  .label { color: #3866c2; font-size: 12px; letter-spacing: .06em; }
+  .tabs, .actions, .controls { display: flex; gap: 8px; flex-wrap: wrap; }
+  button { border: 1px solid #ced5de; border-radius: 6px; background: white; padding: 9px 12px; color: inherit; font: inherit; font-size: 13px; cursor: pointer; }
+  button:hover { border-color: #3866c2; } button:focus-visible, input:focus-visible { outline: 2px solid #3866c2; outline-offset: 3px; }
+  button[aria-selected="true"], .primary { color: white; background: #3866c2; border-color: #3866c2; }
+  .scenario { background: white; border: 1px solid #dde2e9; border-radius: 8px; padding: 16px; margin: 14px 0; }
+  .scenario p { margin: 0 0 12px; font-size: 14px; }
+  .layout { display: grid; grid-template-columns: minmax(0, 1fr) 290px; gap: 16px; }
+  .terminal { background: #17212e; color: #e5ebf4; border-radius: 8px; overflow: hidden; }
+  .terminal-header { font-size: 12px; background: #253244; color: #aebed2; padding: 10px 16px; display: flex; justify-content: space-between; }
+  #transcript { height: 380px; overflow: auto; padding: 16px; }
+  pre { white-space: pre-wrap; overflow-wrap: anywhere; font-family: ui-monospace, monospace; font-size: 12px; line-height: 1.7; margin: 0 0 16px; }
+  .prompt { color: #a5c6ff; display: block; } .command-block:last-child { margin-bottom: 0; }
+  .command-form { display: flex; border-top: 1px solid #3c4b60; padding: 12px; gap: 8px; }
+  .command-form input { flex: 1; min-width: 0; border: 1px solid #526177; background: #17212e; color: white; padding: 9px; border-radius: 4px; font-family: ui-monospace, monospace; }
+  aside { border: 1px solid #dde2e9; padding: 18px; border-radius: 8px; background: white; }
+  dl { font-size: 13px; margin: 0; } dt { color: #647185; margin: 12px 0 4px; } dd { margin: 0; overflow-wrap: anywhere; line-height: 1.5; }
+  .actions { margin-top: 14px; } .footnote { color: #647185; font-size: 12px; }
+  details { background: white; border: 1px solid #dde2e9; border-radius: 8px; margin-top: 18px; padding: 14px; font-size: 13px; }
+  details li { margin: 8px 0; line-height: 1.65; } a { color: #3866c2; }
+  @media(max-width: 780px) { main { padding: 18px 12px; } .layout { grid-template-columns: 1fr; } #transcript { height: 350px; } }
+</style>
+<main>
+  <span class="label">可点击原型 · 尚未确认的方案</span>
+  <h1>首次使用：初始化、检查环境、运行演示</h1>
+  <p class="intro">要回答的问题：用户能否只按终端提示完成首次测试，并在遇到问题时知道下一步？所有命令、状态和结果均为模拟，不安装软件、不创建演示目录、不调用 Docker 或模型。它是 CLI 设计讨论用的单文件原型。</p>
+  <div class="tabs" role="tablist" aria-label="体验场景" id="tabs"></div>
+  <section class="scenario">
+    <p id="description"></p>
+    <div class="controls"><button class="primary" id="guided">执行引导中的下一步</button><button id="reset">重置当前场景</button><span id="step" class="footnote"></span></div>
+  </section>
+  <div class="layout">
+    <section class="terminal" aria-label="模拟终端">
+      <div class="terminal-header"><span>终端输出草案</span><span>所有输出均为模拟</span></div>
+      <div id="transcript" role="log" aria-live="polite"></div>
+      <form class="command-form" id="command-form"><input id="command" aria-label="模拟命令" placeholder="sandcastle-orchestrator --help" autocomplete="off"><button>模拟运行</button></form>
+    </section>
+    <aside>
+      <h2>当前模拟状态</h2><dl id="state"></dl>
+    </aside>
+  </div>
+  <div class="actions" aria-label="自由体验">
+    <button data-action="install">模拟 npm 安装</button><button data-action="home">无参数首页</button><button data-action="help">完整帮助</button><button data-action="version">版本信息</button>
+    <button data-action="init">init</button><button data-action="doctor">doctor</button><button data-action="pull">模拟手动拉取镜像</button><button data-action="demo">demo</button>
+    <button data-action="pass">模拟测试通过</button><button data-action="fail">模拟测试失败</button><button data-action="unknown">模拟结果未知</button>
+  </div>
+  <details open><summary>本原型提出的默认值与待决策问题</summary><ul>
+    <li>安装后的首次路径为 <code>init → doctor → demo</code>。init 默认生成演示；doctor 检查运行条件；demo 会重新检查环境，用户不用记得先运行 doctor。</li>
+    <li>默认根目录拟为 <code>~/.sandcastle-orchestrator/</code>，包含独立的 <code>config/</code>、<code>data/</code> 和 <code>demo-repo/</code>。它们均与全局安装目录分开，不写当前项目目录。配置使用 <code>config/config.ts</code> 及明确 ESM 的配置目录。</li>
+    <li>init 首次写入前展示路径并确认。完整演示已存在时复用；发现自定义或不完整配置时停止，保留原文件，不提供自动覆盖。</li>
+    <li>最小演示不引入第三方运行时依赖，也不要求用户准备 TypeScript 类型检查环境。高级配置的公开类型与独立依赖安装在帮助中另行说明。</li>
+    <li>成功输出分别报告执行结束和测试通过。测试失败仍保存结果；unknown 保留标识与证据，不建议立即重跑。结果展示是草案，具体日常接口与退出码仍需后续票讨论。</li>
+    <li>本文件不决定演示服务的临时数据、启动、停止和 Ctrl+C 契约。这些归属后续生命周期票；原型不会把 unknown 模拟成已停止。</li>
+  </ul></details>
+  <p class="footnote">打开本文件即可运行。刷新会清空状态。参考：<a href="https://clig.dev/#help">CLI 帮助与下一步提示</a>、<a href="https://docs.docker.com/engine/install/">Docker 安装指引</a>。演示镜像沿用现有教程示例，实际发布时的可信镜像与版本由部署配置明确。</p>
+</main>
+<script>
+// Throwaway onboarding model. No filesystem, network, process, or persistence access.
+const cli = 'sandcastle-orchestrator';
+const root = '~/.sandcastle-orchestrator';
+const image = 'node:22.22-alpine';
+const scenarios = [
+  { title: '正常完成', description: '已具备 Git、flock、可用 Docker 和本地演示镜像。观察每一步是否能直接找到下一条命令。', steps: ['install','home','init','confirm','doctor','demo','pass'] },
+  { title: '缺少镜像', description: 'Docker 可用，但演示镜像未准备。doctor 给出拉取命令，用户自行执行后再运行 demo。', image: false, steps: ['install','home','init','confirm','doctor','pull','demo','pass'] },
+  { title: '重复初始化', description: '先完成初始化，再次 init。观察既有文件是否保持不变，是否仍然能知道下一步。', steps: ['install','init','confirm','init','doctor','demo','pass'] },
+  { title: '直接运行 demo', description: '用户安装后跳过 init，直接运行 demo。应得到缺少配置的说明和初始化命令。', steps: ['install','demo','init','confirm','demo','pass'] },
+  { title: '已有自定义配置', description: '默认位置已有用户自己写的配置。原型应保留它，不将它当作可以直接运行的演示配置。', config: 'custom', steps: ['install','init','help'] },
+  { title: '测试失败', description: '演示执行正常结束，但测试返回失败。不能只显示 completed 就宣称通过。', steps: ['install','init','confirm','demo','fail'] },
+  { title: '结果未知', description: '演示已接纳，但缺少可靠结束证据。观察再次运行 demo 时的提示；停止核对归属后续票。', steps: ['install','init','confirm','demo','unknown','demo'] }
+];
+function initial(scenario) {
+  return { installed: false, config: scenario.config || 'none', confirmation: false, image: scenario.image !== false, phase: 'none', outcome: 'none', runs: 0, filesWritten: 0 };
+}
+function transition(previous, action) {
+  const state = { ...previous };
+  const result = text => ({ state, text });
+  const next = command => `\n\n下一步：\n  ${cli} ${command}`;
+  if (action === 'install') {
+    state.installed = true;
+    return result('已安装 CLI。' + next(''));
+  }
+  if (!state.installed) return result('CLI 尚未安装。发布后的安装命令：\n  npm install -g @canxer314/sandcastle-orchestrator');
+  if (action === 'home') return result(`Sandcastle orchestrator\n在隔离环境运行测试和 Agent 任务。\n\n首次使用\n  ${cli} init     创建演示配置与仓库\n  ${cli} doctor   检查环境，给出修复命令\n  ${cli} demo     运行本地测试并查看结果\n\n日常运行\n  ${cli} serve    明确启动已配置的服务\n\n帮助\n  ${cli} --help\n  ${cli} init --help`);
+  if (action === 'version') return result('sandcastle-orchestrator 0.1.0');
+  if (action === 'help') return result(`用法：${cli} <命令> [选项]\n\n首次使用\n  init     创建本机演示配置、仓库和独立数据目录\n  doctor   检查依赖、配置与目录；不自动修复\n  demo     检查条件并运行已初始化的演示\n\n已有入口\n  serve、submit、show、list、logs、artifact\n  cancel、confirm-stop、resolve、retry、cleanup\n  pause、resume、maintenance、restore-review\n\n配置与数据\n  --config PATH  显式指定可信配置文件\n  --data PATH    显式指定数据目录\n\n示例\n  ${cli} init\n  ${cli} doctor\n  ${cli} demo\n\n默认目录\n  配置 ${root}/config/config.ts\n  数据 ${root}/data/\n  演示 ${root}/demo-repo/\n\n高级配置\n  外部配置自己的运行时依赖必须本地安装。\n  配置类型检查与 TS 加载兼容范围见详细配置指南。`);
+  if (action === 'init') {
+    if (state.config === 'custom') return result(`发现既有配置：${root}/config/config.ts\n它不是本工具生成的完整演示。已保留全部文件，本次未写入。\n\n请检查已有配置，或显式选择其他独立配置与数据路径。` + next('init --help'));
+    if (state.config === 'demo') return result(`完整演示已存在。配置和仓库保持原样，本次未写入。\n  ${root}/config/config.ts` + next('doctor'));
+    state.confirmation = true;
+    return result(`将创建本地演示\n  配置 ${root}/config/config.ts\n  数据 ${root}/data/\n  仓库 ${root}/demo-repo/\n\n不写当前项目，不需要模型账号。\n不安装系统依赖或下载 Docker 镜像。\n\n创建这些文件？[y/N]`);
+  }
+  if (action === 'confirm') {
+    if (!state.confirmation) return result('当前没有等待确认的初始化。' + next('init'));
+    state.config = 'demo'; state.confirmation = false; state.filesWritten += 1;
+    return result(`已创建演示配置、独立数据目录与测试仓库。\n配置不依赖第三方运行时 import。\n已记录演示仓库的固定 commit。` + next('doctor'));
+  }
+  if (action === 'decline') {
+    state.confirmation = false;
+    return result('已取消初始化，未创建文件。' + next('init'));
+  }
+  const prerequisites = () => {
+    if (state.config !== 'demo') return '未找到完整演示配置。本次未启动任务。' + next(state.config === 'custom' ? 'init --help' : 'init');
+    if (!state.image) return `环境检查未通过\n  Linux、Node.js 24+、Git、flock、Docker daemon：可用\n  本地演示镜像 ${image}：缺失\n\n请自行执行：\n  docker pull ${image}\n\n不会自动下载镜像或启动任务。` + next('doctor');
+    return null;
+  };
+  if (action === 'doctor') return result(prerequisites() || `环境检查通过\n  Linux、Node.js 24+、Git、flock：可用\n  Docker daemon 与本地镜像：可用\n  演示配置、固定 commit 与目录分离：通过\n\n无需模型账号。` + next('demo'));
+  if (action === 'pull') {
+    state.image = true;
+    return result('模拟：用户自行拉取镜像完成。原型未联网或调用 Docker。' + next('doctor'));
+  }
+  if (action === 'demo') {
+    if (state.phase === 'unknown') return result(`上次演示结果未知：demo-execution-${state.runs}\n暂不启动新的演示。保留结果和日志，先核对是否仍在执行。`);
+    if (state.phase === 'running') return result('本次演示仍在运行。不要重复提交。');
+    const error = prerequisites(); if (error) return result(error);
+    state.phase = 'running'; state.outcome = 'none'; state.runs += 1;
+    return result(`环境检查通过\n准备本次演示控制服务…\n请求已接纳：demo-execution-${state.runs}\n固定 commit：0123456789012345678901234567890123456789\n\n测试运行中。本命令等待结果，不需要另开终端。`);
+  }
+  if (['pass','fail','unknown'].includes(action)) {
+    if (state.phase !== 'running') return result('没有正在运行的模拟演示。' + next('demo'));
+    const evidence = `${root}/data/ 下的本次执行日志与结果`;
+    if (action === 'unknown') {
+      state.phase = 'unknown'; state.outcome = 'unknown';
+      return result(`演示结果未知\n未得到可靠的执行结束证据，不能确认测试结果或停止状态。\n执行编号：demo-execution-${state.runs}\n保留证据：${evidence}\n\n先核对本次执行，不要立即重跑或删除数据。`);
+    }
+    state.phase = 'completed'; state.outcome = action === 'pass' ? 'passed' : 'failed';
+    if (action === 'fail') return result(`执行已结束，测试未通过\n测试退出码：1\n执行编号：demo-execution-${state.runs}\n结果与日志：${evidence}\n\n先查看失败证据。测试失败与服务故障分别报告。`);
+    return result(`执行已结束，测试通过\n测试退出码：0\n执行编号：demo-execution-${state.runs}\n结果与日志：${evidence}\n\n首次本地测试完成。接下来可以接入真实仓库和 Agent。` + next('init --help'));
+  }
+  return result('这个原型没有模拟该命令。' + next('--help'));
+}
+const commandFor = {
+  install: 'npm install -g @canxer314/sandcastle-orchestrator', home: cli, help: `${cli} --help`, version: `${cli} --version`,
+  init: `${cli} init`, confirm: 'y', decline: 'n', doctor: `${cli} doctor`, pull: `docker pull ${image}`, demo: `${cli} demo`,
+  pass: '[模拟：测试通过]', fail: '[模拟：测试失败]', unknown: '[模拟：结果未知]'
+};
+let scenarioIndex = 0, stepIndex = 0, state = initial(scenarios[0]);
+const transcript = document.querySelector('#transcript');
+function print(command, text) {
+  const block = document.createElement('pre'); block.className = 'command-block';
+  const prompt = document.createElement('span'); prompt.className = 'prompt'; prompt.textContent = '$ ' + command;
+  block.append(prompt, document.createTextNode(text)); transcript.append(block); transcript.scrollTop = transcript.scrollHeight;
+}
+function render() {
+  const fields = {
+    'CLI': state.installed ? '已安装' : '未安装',
+    '配置': { none: '未初始化', demo: '已生成演示', custom: '既有自定义配置' }[state.config],
+    '初始化确认': state.confirmation ? '等待用户确认' : '无',
+    '演示镜像': state.image ? '本地可用' : '缺失',
+    '执行': { none: '未提交', running: '运行中', completed: '已结束', unknown: '未知' }[state.phase],
+    '测试结果': { none: '尚无结果', passed: '通过', failed: '未通过', unknown: '未知' }[state.outcome],
+    '演示提交次数': state.runs,
+    '初始化写入次数': state.filesWritten,
+    '服务停止': state.phase === 'unknown' ? '未确认' : '退出契约留待生命周期票决定'
+  };
+  const dl = document.querySelector('#state'); dl.replaceChildren();
+  for (const [key,value] of Object.entries(fields)) {
+    const dt = document.createElement('dt'); dt.textContent = key;
+    const dd = document.createElement('dd'); dd.textContent = value; dl.append(dt,dd);
+  }
+  let confirm = document.querySelector('#confirm');
+  if (state.confirmation && !confirm) {
+    confirm = document.createElement('button'); confirm.id = 'confirm'; confirm.className = 'primary'; confirm.textContent = '确认创建演示';
+    confirm.onclick = () => run('confirm'); document.querySelector('.actions').append(confirm);
+  }
+  if (!state.confirmation && confirm) confirm.remove();
+  const scenario = scenarios[scenarioIndex];
+  document.querySelector('#step').textContent = `引导 ${Math.min(stepIndex,scenario.steps.length)} / ${scenario.steps.length}`;
+  document.querySelector('#guided').textContent = stepIndex < scenario.steps.length ? `下一步：${commandFor[scenario.steps[stepIndex]]}` : '引导已完成，可自由体验';
+}
+function run(action) {
+  const result = transition(state,action); state = result.state; print(commandFor[action] || action,result.text); render();
+}
+function select(index) {
+  scenarioIndex = index; stepIndex = 0; state = initial(scenarios[index]); transcript.replaceChildren();
+  document.querySelector('#description').textContent = scenarios[index].description;
+  document.querySelectorAll('[role=tab]').forEach((button,i) => button.setAttribute('aria-selected',String(i === index)));
+  render();
+}
+scenarios.forEach((scenario,i) => {
+  const tab = document.createElement('button'); tab.setAttribute('role','tab'); tab.textContent = scenario.title; tab.onclick = () => select(i); document.querySelector('#tabs').append(tab);
+});
+document.querySelectorAll('[data-action]').forEach(button => button.onclick = () => run(button.dataset.action));
+document.querySelector('#guided').onclick = () => {
+  const scenario = scenarios[scenarioIndex];
+  if (stepIndex < scenario.steps.length) run(scenario.steps[stepIndex++]);
+};
+document.querySelector('#reset').onclick = () => select(scenarioIndex);
+document.querySelector('#command-form').onsubmit = event => {
+  event.preventDefault(); const input = document.querySelector('#command'); const command = input.value.trim(); if (!command) return;
+  let action = Object.keys(commandFor).find(key => commandFor[key] === command);
+  if (command === `${cli} init --help`) action = 'help';
+  if (command === 'n') action = 'decline';
+  if (action) run(action); else print(command,'本原型没有模拟该命令。试试 ' + cli + ' --help。');
+  input.value = '';
+};
+select(0);
+</script>
+</html>
