@@ -33,7 +33,7 @@
   @media(max-width: 780px) { main { padding: 18px 12px; } .layout { grid-template-columns: 1fr; } #transcript { height: 350px; } }
 </style>
 <main>
-  <span class="label">可点击原型 · 尚未确认的方案</span>
+  <span class="label">可点击原型 · 首次流程已确认，服务生命周期待讨论</span>
   <h1>首次使用：初始化、检查环境、运行演示</h1>
   <p class="intro">要回答的问题：用户能否只按终端提示完成首次测试，并在遇到问题时知道下一步？所有命令、状态和结果均为模拟，不安装软件、不创建演示目录、不调用 Docker 或模型。它是 CLI 设计讨论用的单文件原型。</p>
   <div class="tabs" role="tablist" aria-label="体验场景" id="tabs"></div>
@@ -56,11 +56,11 @@
     <button data-action="init">init</button><button data-action="doctor">doctor</button><button data-action="pull">模拟手动拉取镜像</button><button data-action="demo">demo</button>
     <button data-action="pass">模拟测试通过</button><button data-action="fail">模拟测试失败</button><button data-action="unknown">模拟结果未知</button>
   </div>
-  <details open><summary>本原型提出的默认值与待决策问题</summary><ul>
+  <details open><summary>已确认的首次规则与后续决策边界</summary><ul>
     <li>安装后的首次路径为 <code>init → doctor → demo</code>。init 默认生成演示；doctor 检查运行条件；demo 会重新检查环境，用户不用记得先运行 doctor。</li>
-    <li>默认根目录拟为 <code>~/.sandcastle-orchestrator/</code>，包含独立的 <code>config/</code>、<code>data/</code> 和 <code>demo-repo/</code>。它们均与全局安装目录分开，不写当前项目目录。配置使用 <code>config/config.ts</code> 及明确 ESM 的配置目录。</li>
+    <li>默认根目录为 <code>~/.sandcastle-orchestrator/</code>，包含独立的 <code>config/</code>、<code>data/</code> 和 <code>demo-repo/</code>。它们均与全局安装目录分开，不写当前项目目录。配置使用 <code>config/config.ts</code> 及明确 ESM 的配置目录。</li>
     <li>init 首次写入前展示路径并确认。完整演示已存在时复用；发现自定义或不完整配置时停止，保留原文件，不提供自动覆盖。</li>
-    <li>最小演示不引入第三方运行时依赖，也不要求用户准备 TypeScript 类型检查环境。高级配置的公开类型与独立依赖安装在帮助中另行说明。</li>
+    <li>doctor 在未初始化时也能检查基础依赖；init 在写入前检查生成演示所需依赖。最小演示不引入第三方运行时依赖，也不要求用户准备 TypeScript 类型检查环境。高级配置的公开类型与独立依赖安装在帮助中另行说明。</li>
     <li>成功输出分别报告执行结束和测试通过。测试失败仍保存结果；unknown 保留标识与证据，不建议立即重跑。结果展示是草案，具体日常接口与退出码仍需后续票讨论。</li>
     <li>本文件不决定演示服务的临时数据、启动、停止和 Ctrl+C 契约。这些归属后续生命周期票；原型不会把 unknown 模拟成已停止。</li>
   </ul></details>
@@ -76,6 +76,7 @@ const scenarios = [
   { title: '缺少镜像', description: 'Docker 可用，但演示镜像未准备。doctor 给出拉取命令，用户自行执行后再运行 demo。', image: false, steps: ['install','home','init','confirm','doctor','pull','demo','pass'] },
   { title: '重复初始化', description: '先完成初始化，再次 init。观察既有文件是否保持不变，是否仍然能知道下一步。', steps: ['install','init','confirm','init','doctor','demo','pass'] },
   { title: '直接运行 demo', description: '用户安装后跳过 init，直接运行 demo。应得到缺少配置的说明和初始化命令。', steps: ['install','demo','init','confirm','demo','pass'] },
+  { title: '先检查环境', description: '用户安装后先运行 doctor。基础检查不依赖初始化，缺少演示配置时给出 init 命令。', steps: ['install','doctor','init','confirm','demo','pass'] },
   { title: '已有自定义配置', description: '默认位置已有用户自己写的配置。原型应保留它，不将它当作可以直接运行的演示配置。', config: 'custom', steps: ['install','init','help'] },
   { title: '测试失败', description: '演示执行正常结束，但测试返回失败。不能只显示 completed 就宣称通过。', steps: ['install','init','confirm','demo','fail'] },
   { title: '结果未知', description: '演示已接纳，但缺少可靠结束证据。观察再次运行 demo 时的提示；停止核对归属后续票。', steps: ['install','init','confirm','demo','unknown','demo'] }
@@ -94,7 +95,8 @@ function transition(previous, action) {
   if (!state.installed) return result('CLI 尚未安装。发布后的安装命令：\n  npm install -g @canxer314/sandcastle-orchestrator');
   if (action === 'home') return result(`Sandcastle orchestrator\n在隔离环境运行测试和 Agent 任务。\n\n首次使用\n  ${cli} init     创建演示配置与仓库\n  ${cli} doctor   检查环境，给出修复命令\n  ${cli} demo     运行本地测试并查看结果\n\n日常运行\n  ${cli} serve    明确启动已配置的服务\n\n帮助\n  ${cli} --help\n  ${cli} init --help`);
   if (action === 'version') return result('sandcastle-orchestrator 0.1.0');
-  if (action === 'help') return result(`用法：${cli} <命令> [选项]\n\n首次使用\n  init     创建本机演示配置、仓库和独立数据目录\n  doctor   检查依赖、配置与目录；不自动修复\n  demo     检查条件并运行已初始化的演示\n\n已有入口\n  serve、submit、show、list、logs、artifact\n  cancel、confirm-stop、resolve、retry、cleanup\n  pause、resume、maintenance、restore-review\n\n配置与数据\n  --config PATH  显式指定可信配置文件\n  --data PATH    显式指定数据目录\n\n示例\n  ${cli} init\n  ${cli} doctor\n  ${cli} demo\n\n默认目录\n  配置 ${root}/config/config.ts\n  数据 ${root}/data/\n  演示 ${root}/demo-repo/\n\n高级配置\n  外部配置自己的运行时依赖必须本地安装。\n  配置类型检查与 TS 加载兼容范围见详细配置指南。`);
+  if (action === 'help') return result(`用法：${cli} <命令> [选项]\n\n首次使用\n  init     创建本机演示配置、仓库和独立数据目录\n  doctor   检查依赖、配置与目录；不自动修复\n  demo     检查条件并运行已初始化的演示\n\n已有入口\n  serve、submit、show、list、logs、artifact\n  cancel、confirm-stop、resolve、retry、cleanup\n  pause、resume、maintenance、restore-review\n\n示例\n  ${cli} init\n  ${cli} doctor\n  ${cli} demo\n\n命令的参数与示例\n  ${cli} init --help\n  ${cli} serve --help`);
+  if (action === 'inithelp') return result(`用法：${cli} init\n创建独立的本地演示。写入前展示路径并询问。\n\n默认目录\n  配置 ${root}/config/config.ts\n  数据 ${root}/data/\n  演示 ${root}/demo-repo/\n\n已有完整演示会复用；自定义或不完整文件保留并停止。\n自定义配置的使用与路径覆盖见详细配置指南。\n\n首次示例\n  ${cli} init\n  ${cli} doctor\n  ${cli} demo\n\n高级配置\n  外部配置自己的运行时依赖必须本地安装。\n  类型检查需要配置目录可解析的公开类型和本地依赖。\n  TS 加载兼容范围与真实仓库、Agent 接入见配置指南。`);
   if (action === 'init') {
     if (state.config === 'custom') return result(`发现既有配置：${root}/config/config.ts\n它不是本工具生成的完整演示。已保留全部文件，本次未写入。\n\n请检查已有配置，或显式选择其他独立配置与数据路径。` + next('init --help'));
     if (state.config === 'demo') return result(`完整演示已存在。配置和仓库保持原样，本次未写入。\n  ${root}/config/config.ts` + next('doctor'));
@@ -115,7 +117,13 @@ function transition(previous, action) {
     if (!state.image) return `环境检查未通过\n  Linux、Node.js 24+、Git、flock、Docker daemon：可用\n  本地演示镜像 ${image}：缺失\n\n请自行执行：\n  docker pull ${image}\n\n不会自动下载镜像或启动任务。` + next('doctor');
     return null;
   };
-  if (action === 'doctor') return result(prerequisites() || `环境检查通过\n  Linux、Node.js 24+、Git、flock：可用\n  Docker daemon 与本地镜像：可用\n  演示配置、固定 commit 与目录分离：通过\n\n无需模型账号。` + next('demo'));
+  if (action === 'doctor') {
+    const base = '基础环境检查\n  Linux、Node.js 24+、Git、flock：可用\n  Docker daemon：可用';
+    const missing = state.image ? '' : `\n  本地演示镜像 ${image}：缺失\n\n请自行执行：\n  docker pull ${image}`;
+    if (state.config === 'none') return result(base + missing + '\n\n尚未初始化演示。基础检查已经完成，本次未写入文件。' + next('init'));
+    if (state.config === 'custom') return result(base + missing + '\n\n检测到已有自定义配置，未将它当作演示配置。' + next('init --help'));
+    return result(prerequisites() || `环境检查通过\n  Linux、Node.js 24+、Git、flock：可用\n  Docker daemon 与本地镜像：可用\n  演示配置、固定 commit 与目录分离：通过\n\n无需模型账号。` + next('demo'));
+  }
   if (action === 'pull') {
     state.image = true;
     return result('模拟：用户自行拉取镜像完成。原型未联网或调用 Docker。' + next('doctor'));
@@ -129,20 +137,21 @@ function transition(previous, action) {
   }
   if (['pass','fail','unknown'].includes(action)) {
     if (state.phase !== 'running') return result('没有正在运行的模拟演示。' + next('demo'));
-    const evidence = `${root}/data/ 下的本次执行日志与结果`;
+    const evidence = `${root}/data/attempts/demo-attempt-${state.runs}/stdout.log`;
+    const readEvidence = `\n\n查看日志：\n  cat "$HOME/.sandcastle-orchestrator/data/attempts/demo-attempt-${state.runs}/stdout.log"`;
     if (action === 'unknown') {
       state.phase = 'unknown'; state.outcome = 'unknown';
-      return result(`演示结果未知\n未得到可靠的执行结束证据，不能确认测试结果或停止状态。\n执行编号：demo-execution-${state.runs}\n保留证据：${evidence}\n\n先核对本次执行，不要立即重跑或删除数据。`);
+      return result(`演示结果未知\n未得到可靠的执行结束证据，不能确认测试结果或停止状态。\n执行编号：demo-execution-${state.runs}\n保留证据：${evidence}\n\n先查看证据，核对本次执行，不要立即重跑或删除数据。` + readEvidence);
     }
     state.phase = 'completed'; state.outcome = action === 'pass' ? 'passed' : 'failed';
-    if (action === 'fail') return result(`执行已结束，测试未通过\n测试退出码：1\n执行编号：demo-execution-${state.runs}\n结果与日志：${evidence}\n\n先查看失败证据。测试失败与服务故障分别报告。`);
-    return result(`执行已结束，测试通过\n测试退出码：0\n执行编号：demo-execution-${state.runs}\n结果与日志：${evidence}\n\n首次本地测试完成。接下来可以接入真实仓库和 Agent。` + next('init --help'));
+    if (action === 'fail') return result(`执行已结束，测试未通过\n测试退出码：1\n执行编号：demo-execution-${state.runs}\n日志：${evidence}\n\n先查看失败证据。测试失败与服务故障分别报告。` + readEvidence);
+    return result(`执行已结束，测试通过\n测试退出码：0\n执行编号：demo-execution-${state.runs}\n日志：${evidence}\n\n首次本地测试完成。接下来可以接入真实仓库和 Agent。` + next('init --help'));
   }
   return result('这个原型没有模拟该命令。' + next('--help'));
 }
 const commandFor = {
   install: 'npm install -g @canxer314/sandcastle-orchestrator', home: cli, help: `${cli} --help`, version: `${cli} --version`,
-  init: `${cli} init`, confirm: 'y', decline: 'n', doctor: `${cli} doctor`, pull: `docker pull ${image}`, demo: `${cli} demo`,
+  init: `${cli} init`, inithelp: `${cli} init --help`, confirm: 'y', decline: 'n', doctor: `${cli} doctor`, pull: `docker pull ${image}`, demo: `${cli} demo`,
   pass: '[模拟：测试通过]', fail: '[模拟：测试失败]', unknown: '[模拟：结果未知]'
 };
 let scenarioIndex = 0, stepIndex = 0, state = initial(scenarios[0]);
@@ -200,7 +209,6 @@ document.querySelector('#reset').onclick = () => select(scenarioIndex);
 document.querySelector('#command-form').onsubmit = event => {
   event.preventDefault(); const input = document.querySelector('#command'); const command = input.value.trim(); if (!command) return;
   let action = Object.keys(commandFor).find(key => commandFor[key] === command);
-  if (command === `${cli} init --help`) action = 'help';
   if (command === 'n') action = 'decline';
   if (action) run(action); else print(command,'本原型没有模拟该命令。试试 ' + cli + ' --help。');
   input.value = '';

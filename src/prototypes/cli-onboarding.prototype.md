@@ -1,17 +1,17 @@
 # CLI 首次使用流程原型
 
-对应[首次 init、doctor、demo 如何形成可直接照做的上手流程？](https://github.com/canxer314/sandcastle-orchestrator/issues/55)。这是未确认的体验草案，不能作为已实施功能或真实执行证据。
+对应[首次 init、doctor、demo 如何形成可直接照做的上手流程？](https://github.com/canxer314/sandcastle-orchestrator/issues/55)。用户已确认本票六项上手规则。本文件保留交互原型，不能作为已实施功能或真实执行证据；演示生命周期与日常接口仍由后续票决定。
 
 双击同目录的 `cli-onboarding.prototype.html` 即可运行，不需要依赖或服务器。所有状态都在内存，刷新清空。通过场景标签、逐步引导或自由按钮体验终端反馈。网页是讨论工具，产品仍为 CLI。
 
-## 需要讨论的选择
+## 已确认的选择
 
-- `init` 是否默认生成演示，首次写入前展示路径并询问一次，随后不再要求手填 repo、capability 或 SHA？
-- 默认路径是否使用 `~/.sandcastle-orchestrator/` 下彼此分离的 config、data、demo-repo？不写当前业务仓库，运行目录保持与配置和 repo 分离。
-- 完整演示存在时复用，自定义或不完整文件存在时保留并停止，是否符合预期？
-- doctor 只检查并给修复指引，demo 再次预检，所以正常上手为 init、doctor、demo，熟悉后可以 init、demo，是否合适？
-- 首次模板是否避免第三方 value import 和类型安装步骤，将公开类型检查、高级配置依赖及 TS 语法兼容留在详细配置帮助中？
-- 结果是否分别展示执行结束、测试结果、执行编号及证据位置，并且每一步给下一条命令？
+- 首次流程为 `init → doctor → demo`。init 默认生成演示，首次写入前展示路径并询问一次，不要求手填 repo、capability、JSON 输入或 SHA。
+- 默认路径为 `~/.sandcastle-orchestrator/` 下彼此分离的 config、data、demo-repo。不写当前业务仓库，运行目录保持与配置和 repo 分离。
+- 完整演示存在时复用，自定义或不完整文件存在时保留并停止，给出下一步指引。
+- 无参数首页突出首次步骤，完整帮助保留全部命令，子命令帮助提供参数和示例。版本信息只报告版本，不连接服务。
+- doctor 在未初始化时也检查基础依赖，init 先检查生成演示所需依赖，demo 再次预检。熟悉后可以 `init → demo`。首次模板避免第三方 value import 和类型安装步骤；公开类型检查、高级配置依赖及 TS 加载兼容范围放在详细配置帮助。
+- 结果分别展示执行状态、测试结果、执行编号及可读取证据位置。每一步给下一条命令，缺依赖给具体修复指引。未知结果明确限制，不把 completed 等同于业务成功。
 
 安装入口已在[正式安装入口决策](https://github.com/canxer314/sandcastle-orchestrator/issues/59#issuecomment-6170318669)中确定，本原型沿用它。版本、标识和结果均为模拟示例；完整 help 中的新参数适用范围仍待确认，既有命令与协议不能由本原型改变。
 
