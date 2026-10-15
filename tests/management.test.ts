@@ -450,6 +450,76 @@ test('startup rejects data directories overlapping configuration or target check
   expect(configData.stderr).toContain('separate');
 });
 
+test.each([
+  { args: ['show'], error: 'Missing identifier' },
+  { args: ['logs'], error: 'Missing identifier' },
+  { args: ['artifact', 'execution', '--offset=-1'], error: 'Invalid --offset' },
+  { args: ['artifact', 'execution', '--offset', '1.5'], error: 'Invalid --offset' },
+  { args: ['artifact', 'execution', '--offset', ''], error: 'Invalid --offset' },
+  { args: ['artifact', 'execution'], error: 'Missing --socket' },
+  { args: ['artifact', 'execution', '--socket', '/unused'], error: 'Missing --name' },
+  { args: ['submit'], error: 'Missing --socket' },
+  { args: ['submit', '--socket', '/unused'], error: 'Missing --repo' },
+  { args: ['submit', '--socket', '/unused', '--repo', 'alpha'], error: 'Missing --capability' },
+  { args: ['submit', '--socket', '/unused', '--repo', 'alpha', '--capability', 'test'], error: 'Missing --input' },
+  { args: ['submit', '--socket', '/unused', '--repo', 'alpha', '--capability', 'test', '--input', 'null'], error: 'Missing --source' },
+  ...['cancel', 'confirm-stop', 'resolve', 'retry'].flatMap(command => [
+    { args: [command], error: 'Missing identifier' },
+    { args: [command, 'execution'], error: 'Missing --socket' },
+    { args: [command, 'execution', '--socket', '/unused'], error: 'Missing --reason' },
+  ]),
+])('CLI preserves validation order for $args', async ({ args, error }) => {
+  const result = await cli(args);
+  expect(result.code).toBe(1);
+  expect(result.stdout).toBe('');
+  expect(JSON.parse(result.stderr)).toEqual({ error });
+});
+
+test('CLI rejects malformed submission JSON before requiring source or contacting the socket', async () => {
+  const result = await cli(['submit', '--socket', '/unused', '--repo', 'alpha', '--capability', 'test', '--input', '{']);
+  expect(result.code).toBe(1);
+  expect(result.stdout).toBe('');
+  expect(JSON.parse(result.stderr).error).toMatch(/JSON/);
+});
+
+test.each([{ args: [] }, { args: ['--data', '/unused'] }])('serve argument failures keep the service log contract for $args', async ({ args }) => {
+  const result = await cli(['serve', ...args]);
+  expect(result.code).toBe(1);
+  expect(result.stdout).toBe('');
+  expect(JSON.parse(result.stderr)).toMatchObject({ event: 'service_failure', error: 'Control service failed' });
+});
+
+test('serve emits ready JSON and handles SIGINT without reporting execution stop', async () => {
+  const f = await fixture();
+  const child = spawn(process.execPath, ['--import', 'tsx', 'src/cli.ts', 'serve', '--data', f.dir, '--config', f.config], { cwd: root });
+  children.add(child);
+  let stdout = ''; let stderr = '';
+  child.stdout.on('data', data => { stdout += data; });
+  child.stderr.on('data', data => { stderr += data; });
+  await expect.poll(() => stdout).toContain('ready');
+  expect(JSON.parse(stdout)).toEqual({ ready: true, socket: f.socket });
+  expect(await socketCall(f.socket, { command: 'list' })).toEqual({ status: 200, body: [] });
+  const exited = once(child, 'exit');
+  child.kill('SIGINT');
+  expect(await exited).toEqual([0, null]);
+  children.delete(child);
+  expect(JSON.parse(stdout)).toEqual({ ready: true, socket: f.socket });
+  expect(stderr).not.toContain('service_failure');
+  expect(stderr).not.toContain('service_crash');
+  await expect(stat(f.socket)).rejects.toMatchObject({ code: 'ENOENT' });
+});
+
+test('CLI queries tolerate extra positionals and irrelevant known options without loading config', async () => {
+  const f = await fixture();
+  await start(f);
+  await writeFile(f.config, `throw Error('Client must not load configuration');`);
+  for (const command of ['list', 'maintenance']) {
+    const result = await cli([command, 'ignored', 'extra', '--socket', f.socket, '--config', f.config, '--offset', 'not-a-number', '--call', 'ignored']);
+    expect(result.code, result.stderr).toBe(0);
+    expect(JSON.parse(result.stdout)).toEqual((await socketCall(f.socket, { command })).body);
+  }
+});
+
 test('unknown commands and incomplete submissions fail clearly without producing executions', async () => {
   const f = await fixture();
   await start(f);
