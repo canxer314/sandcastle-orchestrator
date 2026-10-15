@@ -1,10 +1,13 @@
 import { pathToFileURL } from 'node:url';
 import { resolve } from 'node:path';
+import { tsImport } from 'tsx/esm/api';
 import { z, type ZodObject } from 'zod';
 import type { AgentProvider } from '@ai-hero/sandcastle';
 
 export async function loadConfiguration(path: string): Promise<Configuration> {
-  const config = (await import(pathToFileURL(resolve(path)).href)).default;
+  const loaded = await tsImport(pathToFileURL(resolve(path)).href, import.meta.url);
+  // tsx may expose transpiled CommonJS through Node's module.exports wrapper.
+  const config = loaded.default?.__esModule ? loaded.default.default : loaded.default;
   if (!config || typeof config.version !== 'string' || !config.version) throw new Error('Missing configuration version');
   for (const [key, label] of [['repos', 'repo'], ['environments', 'environment'], ['capabilities', 'capability']]) {
     if (!Array.isArray(config[key])) throw new Error(`Missing ${key}`);
