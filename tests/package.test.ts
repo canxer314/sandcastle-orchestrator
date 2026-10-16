@@ -1,7 +1,7 @@
 import { execFile, spawn, type ChildProcess } from 'node:child_process';
 import { once } from 'node:events';
 import { promisify } from 'node:util';
-import { mkdtemp, mkdir, readFile, readdir, rm, stat, symlink, unlink, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, readdir, readlink, rm, lstat, stat, symlink, unlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterAll, beforeAll, expect, test } from 'vitest';
@@ -18,8 +18,8 @@ let bin: string;
 let packed: { filename: string; files: { path: string; mode: number }[] };
 const children = new Set<ChildProcess>();
 
-async function start(config: string, data: string, path = process.env.PATH) {
-  const child = spawn(bin, ['serve', '--config', config, '--data', data], { cwd, env: {...process.env, PATH:path} });
+async function start(config: string, data: string, path = process.env.PATH, maintenance?: string) {
+  const child = spawn(bin, ['serve', '--config', config, '--data', data, ...(maintenance ? ['--maintenance', maintenance] : [])], { cwd, env: {...process.env, PATH:path} });
   children.add(child);
   let stdout = ''; let stderr = '';
   child.stdout!.on('data', chunk => { stdout += chunk; });
@@ -375,7 +375,7 @@ test('installed init asks on a terminal, preserves a decline and resolves relati
   expect(JSON.parse(await readFile(join(base, 'data/init.json'), 'utf8'))).toMatchObject({ data: join(base, 'data'), demoRepo: join(base, 'repo') });
 }, 30_000);
 
-test('installed CLI completes a fixed-SHA capability using only a controlled Docker adapter', async () => {
+test('installed CLI retains fixed-SHA evidence and a paused queue across reinstall and local version replacement with a controlled Docker adapter', async () => {
   const checkout = join(directory, 'execution-checkout');
   const configDir = join(directory, 'execution-config');
   const adapterDir = join(directory, 'controlled-bin');
@@ -386,10 +386,16 @@ test('installed CLI completes a fixed-SHA capability using only a controlled Doc
   await exec('git', ['-C', checkout, 'add', '.'], { cwd });
   await exec('git', ['-C', checkout, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-m', 'fixture'], { cwd });
   const sha = (await exec('git', ['-C', checkout, 'rev-parse', 'HEAD'], { cwd })).stdout.trim();
-  await writeFile(join(adapterDir, 'docker'), `#!/bin/sh
-if [ "$1" = run ]; then echo packaged-test; echo controlled-stderr >&2; exit 0; fi
-if [ "$1" = inspect ]; then echo '{"Running":false,"Status":"exited","ExitCode":0}'; exit 0; fi
-exit 1
+  await writeFile(join(adapterDir, 'docker'), `#!${process.execPath}
+const fs = require('node:fs');
+const args = process.argv.slice(2);
+if (args[0] === 'run') {
+  const mount = args.find(arg => arg.startsWith('type=bind,src=') && arg.endsWith(',dst=/artifacts'));
+  fs.writeFileSync(mount.slice('type=bind,src='.length, -',dst=/artifacts'.length) + '/report.txt', 'controlled artifact\\n');
+  console.log('packaged-test'); console.error('controlled-stderr'); process.exit(0);
+}
+if (args[0] === 'inspect') { console.log('{"Running":false,"Status":"exited","ExitCode":0}'); process.exit(0); }
+process.exit(1);
 `, {mode:0o700});
   const config = join(configDir, 'config.ts');
   // No package.json: existing tsx CommonJS-compatible configuration remains supported.
@@ -398,7 +404,7 @@ exit 1
     environments:[{id:'test',docker:{image:'controlled:test'}}], capabilities:[{
       id:'test-commit',environment:'test',validate(input: unknown){if(typeof input!=='string')throw Error('SHA required');},
       execution:{commit(input: unknown){return input as string;}},
-      async run(ctx: any){const result=await ctx.exec(['sh','/workspace/test.sh']);return {business:{passed:result.exitCode===0}};}
+      async run(ctx: any){const result=await ctx.exec(['sh','/workspace/test.sh']);return {business:{passed:result.exitCode===0},artifacts:['report.txt']};}
     }]
   };`);
   const child = await start(config, data, `${adapterDir}:${process.env.PATH}`);
@@ -410,8 +416,138 @@ exit 1
   });
   const logs = JSON.parse((await exec(bin, ['logs', receipt.executionId, '--socket', socket], { cwd })).stdout);
   expect(logs).toMatchObject({complete:true, stdout:'packaged-test\n', stderr:'controlled-stderr\n'});
+  const cli = async (...args: string[]) => JSON.parse((await exec(bin, args, {cwd})).stdout);
+  const manage = (command: string, target = 'all') => cli(command, '--socket', socket, '--target', target, '--source', 'operator', '--reason', 'packaged lifecycle check');
+  const saved = await cli('show', receipt.executionId, '--socket', socket);
+  const artifact = await cli('artifact', receipt.executionId, '--name', 'report.txt', '--socket', socket);
+  expect(Buffer.from(artifact.content, 'base64').toString()).toBe('controlled artifact\n');
+  await manage('pause', 'starts');
+  const queued = await cli('submit', '--socket', socket, '--repo', 'example', '--capability', 'test-commit', '--input', JSON.stringify(sha), '--source', 'package-test');
+  expect(queued.accepted).toBe(true);
+  await manage('pause');
   await stop(child);
-}, 30_000);
+  // init layout is not interpreted by serve or the package manager.
+  await writeFile(join(data, 'init.json'), '{"layoutVersion":"preserve-opaque-marker"}\n');
+  const before = await Promise.all([data, configDir, checkout].map(resourceSnapshot));
+  const replacement = await localVersionTarball();
+  for (const args of [['uninstall', '@canxer314/sandcastle-orchestrator'], ['install', replacement.path], ['install', join(directory, packed.filename)]]) {
+    await exec('npm', [...args, '--global', '--prefix', prefix, '--omit=dev', '--no-audit', '--no-fund'], {cwd, timeout:180_000});
+    expect(await Promise.all([data, configDir, checkout].map(resourceSnapshot))).toEqual(before);
+    if (args[0] === 'uninstall') continue;
+    // Offline reading is also safe on the retained records before any service starts.
+    expect(await cli('show', receipt.executionId, '--data', data, '--offline')).toEqual(saved);
+    expect(await cli('logs', receipt.executionId, '--data', data, '--offline')).toEqual(logs);
+    expect(await Promise.all([data, configDir, checkout].map(resourceSnapshot))).toEqual(before);
+  }
+  const restarted = await start(config, data, `${adapterDir}:${process.env.PATH}`, 'paused');
+  expect(await cli('maintenance', '--socket', socket)).toMatchObject({admissionPaused:true, startsPaused:true});
+  expect(await cli('show', receipt.executionId, '--socket', socket)).toEqual(saved);
+  expect(await cli('artifact', receipt.executionId, '--name', 'report.txt', '--socket', socket)).toEqual(artifact);
+  expect(await cli('list', '--socket', socket)).toHaveLength(2);
+  expect(await cli('show', queued.executionId, '--socket', socket)).toMatchObject({execution:{status:'queued'}, attempts:[]});
+  await manage('resume');
+  await expect.poll(() => cli('show', queued.executionId, '--socket', socket), {timeout:10_000}).toMatchObject({execution:{status:'completed'}, attempts:[{configVersion:'packaged-execution', actualSha:sha}]});
+  expect(await cli('show', receipt.executionId, '--socket', socket)).toEqual(saved);
+  await stop(restarted);
+}, 240_000);
+
+async function resourceSnapshot(path: string): Promise<unknown> {
+  const info = await lstat(path);
+  const metadata = { mode: info.mode, mtime: info.mtimeMs };
+  if (info.isSymbolicLink()) return { ...metadata, target: await readlink(path) };
+  if (info.isDirectory()) {
+    const entries: Record<string, unknown> = {};
+    for (const name of (await readdir(path)).sort()) entries[name] = await resourceSnapshot(join(path, name));
+    return { ...metadata, entries };
+  }
+  return { ...metadata, bytes: (await readFile(path)).toString('base64') };
+}
+
+async function localVersionTarball() {
+  const alternate = await mkdtemp(join(directory, 'alternate-package-'));
+  // Only the version differs; this is npm replacement evidence, not a historical release.
+  await exec('tar', ['-xzf', join(directory, packed.filename), '-C', alternate], { cwd });
+  const manifestPath = join(alternate, 'package/package.json');
+  const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
+  manifest.version = `${manifest.version}-lifecycle-test.84`;
+  await writeFile(manifestPath, JSON.stringify(manifest));
+  const [replacement] = Object.values(JSON.parse((await exec('npm', ['pack', '--json', '--ignore-scripts', '--pack-destination', alternate], { cwd: join(alternate, 'package') })).stdout)) as {filename:string}[];
+  return { path: join(alternate, replacement.filename), version: manifest.version };
+}
+
+test('npm install, uninstall, reinstall and local version replacement preserve default and custom user resources', async () => {
+  const home = join(directory, 'lifecycle-home');
+  const resources = join(directory, 'custom-resources');
+  const lifecyclePrefix = join(directory, 'lifecycle-prefix');
+  const lifecycleBin = join(lifecyclePrefix, 'bin/sandcastle-orchestrator');
+  await mkdir(home); await mkdir(resources);
+  const manifest = JSON.parse(await readFile(join(installed, 'package.json'), 'utf8'));
+  for (const hook of ['preinstall', 'install', 'postinstall', 'preuninstall', 'uninstall', 'postuninstall']) {
+    expect(manifest.scripts?.[hook]).toBeUndefined();
+  }
+  const replacement = await localVersionTarball();
+
+  for (const base of [join(home, '.sandcastle-orchestrator'), resources]) {
+    for (const [name, content] of Object.entries({
+      'config/config.ts': 'throw Error("Install must not execute trusted configuration");\n',
+      'config/dependency.ts': 'export const userSetting = "keep";\n',
+      'data/init.json': '{"layoutVersion":"opaque-user-marker","custom":true}\n',
+      'data/records.sqlite': 'opaque preservation sentinel; not a database fixture\n',
+      'data/attempts/saved/workspace/edited.txt': 'uncommitted attempt work\n',
+      'data/attempts/saved/artifacts/report.txt': 'retained evidence\n',
+      'data/attempts/saved/stdout.log': 'retained stdout\n',
+      'data/attempts/saved/stderr.log': 'retained stderr\n',
+      'inputs/question.json': '{"question":"keep this input"}\n',
+      'setup/config.ts': 'throw Error("Do not load setup configuration");\n',
+      'setup/data/init.json': '{"custom":"setup resources"}\n',
+      'setup/input.json': '{"question":"setup input"}\n',
+    })) {
+      const target = join(base, name);
+      await mkdir(resolve(target, '..'), {recursive:true, mode:0o700});
+      await writeFile(target, content, {mode:0o600});
+    }
+    for (const name of ['demo-repo', 'real-repo']) {
+      const repo = join(base, name);
+      await mkdir(repo);
+      await exec('git', ['init', repo], { cwd });
+      await writeFile(join(repo, 'tracked.txt'), 'committed fixture\n');
+      await exec('git', ['-C', repo, 'add', '.'], { cwd });
+      await exec('git', ['-C', repo, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-m', 'fixture'], { cwd });
+      await writeFile(join(repo, 'tracked.txt'), 'user edit must survive\n');
+      await writeFile(join(repo, 'untracked.txt'), 'untracked work\n');
+    }
+    await symlink(join(base, 'inputs'), join(base, 'input-alias'));
+  }
+  // Synthetic host state only. Never inspect the operator's private configuration.
+  for (const name of ['.claude/settings.json', '.cc-switch/config.json', '.docker/config.json']) {
+    const path = join(home, name);
+    await mkdir(resolve(path, '..'), {recursive:true});
+    await writeFile(path, '{"synthetic":"must remain unchanged"}\n', {mode:0o600});
+  }
+  const guards = join(directory, 'lifecycle-guards');
+  const calls = join(directory, 'unexpected-lifecycle-calls');
+  await mkdir(guards);
+  for (const name of ['docker', 'sandcastle-orchestrator', 'systemctl', 'gh']) {
+    await writeFile(join(guards, name), `#!/bin/sh\nprintf '%s\\n' ${JSON.stringify(name)} >> ${JSON.stringify(calls)}\nexit 99\n`, {mode:0o700});
+  }
+  const before = await Promise.all([home, resources].map(resourceSnapshot));
+  const env = {...process.env, HOME:home, PATH:`${guards}:${process.env.PATH}`, npm_config_cache:join(directory, 'lifecycle-cache'), npm_config_userconfig:join(directory, 'absent.npmrc')};
+  const npm = async (...args: string[]) => {
+    await exec('npm', [...args, '--global', '--prefix', lifecyclePrefix, '--no-audit', '--no-fund'], {cwd, env, timeout:180_000});
+    expect(await Promise.all([home, resources].map(resourceSnapshot))).toEqual(before);
+    await expect(lstat(calls)).rejects.toMatchObject({code:'ENOENT'});
+  };
+  const original = join(directory, packed.filename);
+  await npm('install', original);
+  expect((await exec(lifecycleBin, ['--version'], {cwd, env})).stdout).toBe(`${manifest.version}\n`);
+  await npm('uninstall', manifest.name);
+  await expect(lstat(lifecycleBin)).rejects.toMatchObject({code:'ENOENT'});
+  await npm('install', original);
+  await npm('install', replacement.path);
+  expect((await exec(lifecycleBin, ['--version'], {cwd, env})).stdout).toBe(`${replacement.version}\n`);
+  await npm('install', original);
+  expect((await exec(lifecycleBin, ['--version'], {cwd, env})).stdout).toBe(`${manifest.version}\n`);
+}, 240_000);
 
 test('readonly tutorial works as a package consumer through submit, show and report artifacts', async () => {
   const project = join(directory, 'readonly-tutorial');
