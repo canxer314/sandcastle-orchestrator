@@ -5,11 +5,15 @@ Start the control service explicitly; stdout emits ready JSON, stderr contains s
 --maintenance defaults to normal. Shutdown does not prove execution children stopped.
 --human is not supported; the ready JSON/service log protocol is unchanged.
 Example: sandcastle-orchestrator serve --data /srv/orchestrator-data --config /srv/orchestrator-config/config.ts`,
-  submit: `submit --socket PATH --repo ID --capability ID --input JSON --source TEXT
-[--deduplication-key KEY] [--scheduled-at ISO_TIMESTAMP]
-Submit asynchronously. --input is inline JSON; scheduled-at is metadata, not a start timer.
-Check accepted: rejection is a recorded JSON response with exit 0, not completion.
-Example: sandcastle-orchestrator submit --socket /srv/orchestrator-data/control.sock --repo example --capability test-commit --input '"FULL_COMMIT_SHA"' --source manual`,
+  submit: `submit --repo ID --capability ID --source TEXT
+(--input JSON | --input-file PATH | --input-file -) [--data DIR | --socket PATH]
+[--human | --json] [--deduplication-key KEY] [--scheduled-at ISO_TIMESTAMP]
+Submit asynchronously, reporting acceptance only, not execution success.
+--input-file reads JSON from a file, or stdin with -. Inputs are mutually exclusive; never executed.
+Repo is a configured ID, not a checkout path; capability may name a role; source is not authentication.
+Human mode generates a missing key and writes source/key/recheck to stderr BEFORE sending.
+Explicit keys are unchanged; JSON never generates a key. scheduled-at is metadata, not a timer.
+Example: sandcastle-orchestrator submit --data /srv/orchestrator-data --repo example --capability test-commit --input-file input.json --source manual --human`,
   show: `show ID | show --source SOURCE --deduplication-key KEY
 [--data DIR | --socket PATH] [--offline] [--human | --json]
 Read a request/execution, or ALL source/key matches including rejections, in record order.
@@ -76,7 +80,19 @@ Relative paths resolve from cwd. Queries do not load --config or start a service
 Offline activity is unverified. Missing/unsupported records fail without repair; no init marker needed.
 Human socket waits are bounded to 30 seconds; Ctrl+C exits 130 without cancelling execution.
 Query success exits 0 even for failed/unknown business results; errors/timeouts exit 1.` : '';
-    return `Usage: sandcastle-orchestrator ${commandHelp[command]}${queryHelp}\n\n-h, --help  Show help without loading configuration or connecting to a service.`;
+    const writeHelp = !['serve', 'show', 'list', 'logs', 'artifact', 'maintenance'].includes(command) ? `
+Writes default to JSON, never switch by TTY. --human and --json are mutually exclusive.
+New modes/options accept --data DIR or --socket PATH; default data: ~/.sandcastle-orchestrator/data.
+Default socket: selected data/control.sock. Explicit data/socket must identify the same physical socket.
+Relative paths resolve from cwd. No config is loaded and no service is started by a write client.
+Legacy calls without new options still require --socket and retain argument tolerance and exit codes.
+--offline is read-only and is rejected for writes. New modes/options reject irrelevant/extra arguments.
+Human waits stop after 30 seconds, only on the client. Never automatically resend.
+Human exit codes: confirmed receipt 0, rejection/ordinary error 1, sent but unconfirmed 2.
+Ctrl+C only interrupts waiting, not the operation: unconfirmed sent writes exit 2, otherwise 130.
+Check the displayed read-only command before any manual retry; missing records are not permission to resend.
+JSON retains legacy waits and accepted:false exit 0; diagnostics/progress stay on stderr.` : '';
+    return `Usage: sandcastle-orchestrator ${commandHelp[command]}${queryHelp}${writeHelp}\n\n-h, --help  Show help without loading configuration or connecting to a service.`;
   }
   return `Sandcastle orchestrator. Single-host fixed-commit execution and Unix socket management.
 Usage: sandcastle-orchestrator COMMAND [OPTIONS]
@@ -87,9 +103,9 @@ ${commands.map(name => `  ${name}`).join('\n')}
 Start here: prepare a trusted external config, then explicitly run serve.
 Example: sandcastle-orchestrator serve --data /srv/orchestrator-data --config /srv/orchestrator-config/config.ts
 Use sandcastle-orchestrator COMMAND --help for options and examples.
-Management commands default to JSON; errors go to stderr. Read queries accept --human.
-Queries default to selected --data/control.sock (data defaults to ~/.sandcastle-orchestrator/data).
-Writes still require --socket PATH. show/list/logs accept explicit --offline for read-only evidence.
+Management commands default to JSON; errors go to stderr. Use explicit --human for readable queries/writes.
+New modes/options select --data/control.sock (data defaults to ~/.sandcastle-orchestrator/data), or --socket.
+Legacy writes without new options still require --socket PATH. show/list/logs accept read-only --offline.
 -h, --help     Show help without configuration or a service.
 -v, --version  Print only the installed package version.
 init, doctor, demo, setup: unreleased; not available commands.

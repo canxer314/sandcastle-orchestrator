@@ -4,9 +4,9 @@
 
 ## 选择实例与输出
 
-查询默认 JSON，不随 TTY 改变。显式 `--human` 才输出可读格式，与 `--json` 互斥。新选项严格拒绝额外位置参数和无关参数；不使用新选项的旧调用仍保留既有容忍行为。写命令本阶段仍使用原 JSON/socket 方式，不支持 human 回执或输入文件。`serve --human` 明确拒绝，ready JSON 与 stderr 服务日志不变。
+查询默认 JSON，不随 TTY 改变。显式 `--human` 才输出可读格式，与 `--json` 互斥。新选项严格拒绝额外位置参数和无关参数；不使用新选项的旧调用仍保留既有容忍行为。管理写命令的 human 回执和文件/stdin 输入见[提交与可靠回执](submissions.md)。`serve --human` 明确拒绝，ready JSON 与 stderr 服务日志不变。
 
-查询未指定 socket 时使用所选 `--data` 内的 `control.sock`，默认 data 为 `~/.sandcastle-orchestrator/data`。显式 `--socket` 优先；同时显式给 data 时，必须指向该 data 的同一个物理 socket，符号链接别名可用。相对路径按当前目录解析。查询不会为了猜 socket 加载 `--config`，也不会启动服务。写命令仍须显式提供 `--socket`。
+查询未指定 socket 时使用所选 `--data` 内的 `control.sock`，默认 data 为 `~/.sandcastle-orchestrator/data`。显式 `--socket` 优先；同时显式给 data 时，必须指向该 data 的同一个物理 socket，符号链接别名可用。相对路径按当前目录解析。查询不会为了猜 socket 加载 `--config`，也不会启动服务。使用新模式/选项的写命令沿用上述实例选择；旧写调用仍须显式提供 `--socket`。
 
 ```sh
 pnpm start list --data /srv/orchestrator-data --human
