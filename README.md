@@ -140,13 +140,30 @@ repos: [
 
 角色 Prompt、skills/tool 说明、配置版本、provider/environment 身份与固定 SHA 在模型启动前必要保存，配置不热更新。输出格式由角色负责：`validateReport(output: string)` 接收真实文本，可直接返回文本或自行解析 JSON，并返回可 JSON 保存的业务报告；抛错表示返回契约错误。运行 error/exit code 与报告契约分别保存，非零退出的有效报告不会被丢弃。`show` 保存输出、迭代/session 引用、exit code、报告与契约状态；正常 CLI 退出不代表业务成功，不把建议转为请求。每次 retry 新目录、新 `orch/ATTEMPT_ID` branch、新 session，不 resume/fork。session 导出通过 `docker exec -i CONTAINER cat -- PATH` 流式写入宿主文件，兼容 `/home/agent` tmpfs，不依赖无法读取该挂载内容的 `docker cp`；文件导出不使用 8 MiB 命令缓冲，非零退出或宿主写入失败仍按 session capture 失败记录。
 
-只读报告设施从本地 repo 创建独立无 remote clone，拒绝 symlink/submodule 与目标树 `.sandcastle/.env`；不挂载原 checkout、宿主 home、Docker socket或凭据。public `createSandbox` 创建专用 worktree，薄 `createBindMountSandboxProvider` 将代码/Git metadata 全部 readonly 挂载，root filesystem readonly，只有隔离 `/tmp`、`/home/agent` tmpfs 可写；Git setup 写隔离 home 的 global config，repo保持只读。管理员配置可信预部署 `docker.image` 与可选 `docker.env`、`docker.network`（默认 none，不允许 host），模型认证仅用专用授权凭据，绝不注入宿主环境或 GitHub 写凭据。provider 的 `agent.env` 不自动注入长生命周期 Sandbox，应明确在环境中配置。环境值不保存配置快照，但日志/模型输出不做秘密过滤。当前报告设施不提供写 repo 的业务角色。
+只读报告设施从本地 repo 创建独立无 remote clone，拒绝 symlink/submodule 与目标树 `.sandcastle/.env`；不挂载原 checkout、宿主 home、Docker socket或凭据。public `createSandbox` 创建专用 worktree，薄 `createBindMountSandboxProvider` 将代码/Git metadata 全部 readonly 挂载，root filesystem readonly，只有隔离 `/tmp`、`/home/agent` tmpfs 可写；Git setup 写隔离 home 的 global config，repo保持只读。管理员配置可信预部署 `docker.image` 与可选 `docker.env`、`docker.network`（默认 none，不允许 host）。未选择下述 `connection` 时，模型认证仍由管理员在环境中明确提供，不自动注入宿主环境或 GitHub 写凭据；provider 的 `agent.env` 不自动注入长生命周期 Sandbox。旧路径不保存环境快照，但不保证日志/模型输出秘密过滤。
 
 不使用内置 SDK Docker provider：0.12.0 的 shutdown hook 在 exit/SIGINT/SIGTERM 调用 `docker rm -f`，没有公开 opt-out，违反未知状态不强杀。这里不注册这种 hook、不调用 SDK close/abort、不自动清理容器。管理员须在核查结束后清理保留容器。角色取消先保存协作意图，再向仅本 attempt 的目录发布 stop 文件，readonly 挂载 `/orchestrator-stop/requested`，Prompt 要求定期检查并及时返回；通知失败及必要保存失败可查询，不 close/kill，也不保证 Agent一定响应。原运行得到 CLI exit evidence 后可保存 cancelled。未知状态仍须人工确认停止后恢复。
 
 `Sandbox.run` resolve 与模型文本都不能证明退出。公开 provider command 外包 subshell，在 CLI 实际结束后写随机 exit marker，stream parser 精确识别该 marker，保留原 stdin/parser/session 契约；marker 缺失保持 unknown。该证据用于可信设施中的生命周期观察，不是抵抗恶意容器/模型伪造的安全认证。显式 `idleTimeoutSeconds: Infinity`、`completionTimeoutSeconds: Infinity`、`completionSignal: []`，不增加 token/费用/turn 预算。Git setup/commit collection 沿用 SDK 10s/30s 真实设施超时；Docker启动与管理员工具各自负责超时，编排器不强杀。
 
 2026-10-11 已在授权环境完成真实只读单角色运行与人工 retry，通过 Claude Code → CC-Switch → Codex OAuth 路径验证挂载、认证、报告、session 导出和退出证据，详见 [验收记录](docs/issue-19-real-acceptance.md)。此结果不代表其他 provider 或真实协作取消响应通过；并发调度不在本实现范围。
+
+### 执行级授权连接与模型继承（#80）
+
+可信配置可在 Claude Code provider 上明确选择 `connection`，示例和完整白名单见 [连接投影指南](docs/connection-projection.md)。该选择授权服务在每次角色尝试开始时读取指定 settings JSON 或当前服务进程环境，不扫描 home、不读取 CC-Switch 数据库，也不复制宿主 `/login`。连接秘密不写进 TypeScript 配置或任务输入。未配置 `connection` 的旧 provider、显式模型、记录和 socket 协议保持原行为。
+
+```ts
+import { claudeCode } from './src/connection.js';
+const providers = [{
+  id: 'claude',
+  agent: claudeCode(), // 无 --model；显式 claudeCode('backend-model') 原样覆盖。
+  connection: { source: 'settings', path: '/absolute/authorized/settings.json' },
+}];
+```
+
+投影只支持容器可达的 Anthropic Messages-compatible client endpoint 和静态 API key 或 Bearer token，不限定模型厂商。没有自动 localhost 桥，不改宿主执行、不新增认证方式。普通角色可显式配置 `docker.network: 'bridge'` 出网；历史 PR 分析示例的 endpoint-only 网络要求限于其当时受控部署，不是通用接入新门槛。host 网络禁令、确定性测试禁网、路径/权限及 unknown 人工核对边界不变。
+
+受控测试验证 live 切换、模型参数、冲突/不支持依赖失败、日志/报告/session 秘密过滤。未读取私人连接、运行真实 Docker 或调用真实 provider；这些均仍未验收，需要另行授权。
 
 ### 协作停止与显式期限（#20）
 
@@ -192,7 +209,7 @@ const mcpServices = [{
 
 本增量采用管理员提供的离线证据，不联网采集或独立核验 GitHub。快照格式为 `{version,collectedAt,pullRequests:[{repo,number,url,updatedAt,headSha,body,reviews,diff,missing,truncated}]}`：时间为可解析日期，SHA 必须完整，正文/diff 为字符串，reviews 为数组，missing 为缺失内容名称数组，truncated 必须显式布尔值；文件须为普通非 symlink，最大 64 MiB。管理员负责来源授权和快照真实性；不要填凭据。工具只读部署时固定的路径，参数只接受白名单 PR number，不能选择任意文件、repo、命令或 GitHub API。每次观察返回 `source.kind: administrator-snapshot`、version、采集时间、完整快照 SHA-256、`verifiedAgainstGitHub:false` 与 PR 版本/SHA、缺失/截断线索。PR headSha 是快照所述版本，不冒充 checkout 的实际 SHA；后者仍由 Git 核对并绑定尝试。
 
-可选 `tools[].read(input)` 是管理员部署的可信代码，不是函数名称保证只读。这个具体工具仅使用文件只读打开，不调用 shell、GitHub 或写 API。专属工具 Unix socket 仅开放当前角色绑定的工具，拒绝 64 KiB 以上请求及额外字段；不挂管理 socket、证据源目录、宿主凭据或生产写凭据。工具目录 readonly 挂载，socket `0600`，容器与控制服务使用相同 UID/GID。示例 `network:none` 默认 fail-closed，仅可使用受控离线 provider，不宣称真实模型可运行；真实模型需要另外授权并由实际 egress 设施只允许模型 endpoint，不能仅改成 unrestricted bridge 并注入凭据。不提供 GitHub 凭据，不回退到宿主或更宽环境，本增量不建设网络配置平台。Docker UID/socket 连通性与模型网络策略须在实际授权部署验证。
+可选 `tools[].read(input)` 是管理员部署的可信代码，不是函数名称保证只读。这个具体工具仅使用文件只读打开，不调用 shell、GitHub 或写 API。专属工具 Unix socket 仅开放当前角色绑定的工具，拒绝 64 KiB 以上请求及额外字段；不挂管理 socket、证据源目录、宿主凭据或生产写凭据。工具目录 readonly 挂载，socket `0600`，容器与控制服务使用相同 UID/GID。示例 `network:none` 默认 fail-closed，仅可使用受控离线 provider，不宣称真实模型可运行。该示例的历史 endpoint-only 网络要求属于当时受控部署；通用真实 harness 接入允许管理员明确选择普通 Docker 出网，不以额外网络治理为前置条件。本增量不提供 GitHub 凭据、不回退宿主或 host 网络，也不建设网络配置平台。Docker UID/socket 连通性与实际模型连接须在授权环境验证。
 
 ```sh
 pnpm start submit --socket /srv/orchestrator-data/control.sock --repo example \

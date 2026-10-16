@@ -19,7 +19,7 @@ const preview=(value:string | undefined,bytes:number)=>{
   return text;
 };
 const bridge=`const {connect}=require('node:net');const s=connect(process.argv[2]);s.on('error',()=>process.exit(1));s.on('close',()=>process.exit());process.stdin.pipe(s);s.pipe(process.stdout);`;
-export async function openRoleTools(records:Records,config:Configuration,{executionId,attemptId,directory,workspace,actualSha,toolIds,revisionSource}:{executionId:string;attemptId:string;directory:string;workspace:string;actualSha:string;toolIds:string[];revisionSource?:string}) {
+export async function openRoleTools(records:Records,config:Configuration,{executionId,attemptId,directory,workspace,actualSha,toolIds,revisionSource,redact=text=>text}:{executionId:string;attemptId:string;directory:string;workspace:string;actualSha:string;toolIds:string[];revisionSource?:string;redact?:(text:string)=>string}) {
   const deployed=config.tools?.filter(t=>toolIds.includes(t.id) && (t.capability || t.publication)) ?? [];
   if(!deployed.length)return;
   const mcpDirectory=join(directory,'mcp');await mkdir(mcpDirectory,{mode:0o700,recursive:true});
@@ -31,6 +31,8 @@ export async function openRoleTools(records:Records,config:Configuration,{execut
     const handle=serveStdio(()=>{
       const mcp=new McpServer({name:'orchestrator',version:'1'});
       for(const tool of deployed.filter(t=>t.publication))mcp.registerTool(tool.id,{description:tool.description,inputSchema:z.object({operation:z.enum(['publish','query']),callId:z.string().regex(/^[1-9][0-9]*$/),title:z.string().min(1).max(256).optional(),body:z.string().max(65536).optional()}).strict()},async ({operation,callId,title,body})=>{
+        const publicationInput=JSON.stringify({operation,callId,title,body});
+        if(redact(publicationInput)!==publicationInput)throw Error('Connection credentials are not permitted in tool input');
         if(closed || active || (unknown && operation!=='query'))throw Error('Publication unavailable; query unknown effects before recovery');
         const parent=records.show(executionId).attempts.find(a=>a.id===attemptId);
         const source=calls.find(c=>c.id===callId);const repo=config.repos.find(r=>r.id===records.show(executionId).request.repo)!;
@@ -50,6 +52,8 @@ export async function openRoleTools(records:Records,config:Configuration,{execut
         finally{active=false;releaseIdle()}
       });
       for(const tool of deployed.filter(t=>t.capability))mcp.registerTool(tool.id,{description:tool.description,inputSchema:tool.inputSchema!},async input=>{
+        const toolInput=JSON.stringify(input);
+        if(redact(toolInput)!==toolInput)throw Error('Connection credentials are not permitted in tool input');
         if(closed || active || unknown)throw Error('Tool execution unavailable: closed, busy or previous result unknown');
         const parent=records.show(executionId).attempts.find(a=>a.id===attemptId);
         if(!parent || parent.cancellation || !['starting','running'].includes(parent.runState) || parent.stopConfirmation)throw Error('Attempt no longer allows tool execution');
