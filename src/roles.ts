@@ -16,6 +16,7 @@ import { openRoleTools } from './mcp.js';
 import { configureClaudeMcp, prepareMcp } from './native-mcp.js';
 import { configureClaudeConnection, loadClaudeConnection } from './connection.js';
 import { connectionSecrets } from './connection-secrets.js';
+import { loopbackEndpoint, openLocalhostBridge } from './localhost-bridge.js';
 const execFileAsync=promisify(execFile);
 
 export async function executeRole(records:Records, config:Configuration, executionId:string, data:string) {
@@ -34,6 +35,9 @@ export async function executeRole(records:Records, config:Configuration, executi
   const executableToolIds=role.tools.filter(id=>config.tools?.some(t=>t.id===id && (t.capability || t.publication)));
   const implementationDirectory=join(directory,'implementation');
   let launched=false;
+  let agentStarted=false;
+  let agentExited=false;
+  let bridge:Awaited<ReturnType<typeof openLocalhostBridge>>|undefined;
   let secrets = connectionSecrets([]);
   let tools:Awaited<ReturnType<typeof openRoleTools>>;
   let toolObservationError:string|undefined;
@@ -58,6 +62,7 @@ export async function executeRole(records:Records, config:Configuration, executi
     if(deadlineAt)expire();
     const connection = provider.connection ? await loadClaudeConnection(provider.connection, environment.docker!.env) : undefined;
     secrets = connectionSecrets(connection?.secrets ?? []);
+    const loopback = loopbackEndpoint(connection?.env.ANTHROPIC_BASE_URL);
     const stopDirectory=join(directory,'stop');await mkdir(stopDirectory,{recursive:true,mode:0o700});
     records.updateAttempt(attempt,{stopDirectory});
     await mkdir(workspace,{recursive:true,mode:0o700});
@@ -90,8 +95,11 @@ export async function executeRole(records:Records, config:Configuration, executi
     await writeFile(join(directory,'stdout.log'),'');await writeFile(join(directory,'stderr.log'),'');
     records.updateAttempt(attempt,{kind:'agent',actualSha,workspace,workspaceMode:implementation?'implementation':'readonly',stopDirectory,container,branch,provider:provider.id,prompt,description:role.description,skills:role.skills,tools:role.tools,...(mcp.facts.length ? {mcp:mcp.facts} : {}),logs:{complete:false},sessionPolicy:'new',...(callableTools.length?{artifacts:[{name:'observations.jsonl',attemptId:attempt,actualSha,kind:'tool-observations'}]}:{})});
     const docker=environment.docker!;const binary=docker.binary ?? 'docker';
-    const command=async(args:string[],env:Record<string,string>={})=>{try{return await execFileAsync(binary,args,{env:{PATH:process.env.PATH,...env},maxBuffer:8*1024*1024})}catch{throw Error('Docker facility operation failed; inspect the recorded container identity')}};
-    const sandboxProvider=createBindMountSandboxProvider({name:'orchestrator-docker',env:connection?.env ?? docker.env ?? {},sandboxHomedir:'/home/agent',create:async options=>{
+    const command=async(args:string[],env:Record<string,string>={},timeout?:number)=>{try{return await execFileAsync(binary,args,{env:{PATH:process.env.PATH,...env},maxBuffer:8*1024*1024,...(timeout?{timeout}:{})})}catch{throw Error('Docker facility operation failed; inspect the recorded container identity')}};
+    if(loopback)bridge=await openLocalhostBridge(loopback,docker.network ?? 'none',args=>command(args,{},5000));
+    const bridgeEnv:Record<string,string>=bridge?{ANTHROPIC_BASE_URL:bridge.endpoint}:{};
+    const runtimeEnv={...connection?.runtimeEnv,...bridgeEnv};
+    const sandboxProvider=createBindMountSandboxProvider({name:'orchestrator-docker',env:{...(connection?.env ?? docker.env ?? {}),...bridgeEnv},sandboxHomedir:'/home/agent',create:async options=>{
       if(deadlineError)throw deadlineError;
       const current=records.show(executionId).attempts.at(-1);
       if(current?.cancellation){records.finishAttempt(attempt,'cancelled',{stopConfirmation:{kind:'never-started',confirmedAt:new Date().toISOString()},endedAt:new Date().toISOString()});throw Error('Cancellation requested before agent start');}
@@ -99,7 +107,8 @@ export async function executeRole(records:Records, config:Configuration, executi
       const hostWorkspace=options.mounts.find(m=>m.sandboxPath==='/home/agent/workspace')?.hostPath;
       if(!implementation && executableToolIds.length) {if(!hostWorkspace)throw Error('Current role workspace mount unavailable');tools=await openRoleTools(records,config,{executionId,attemptId:attempt,directory,workspace:hostWorkspace,actualSha,toolIds:role.tools,redact:secrets.redact});}
       const mounts=[...options.mounts,...mcp.mounts].flatMap(m=>['--mount',`type=bind,src=${m.hostPath},dst=${m.sandboxPath},readonly`]);
-      await command(['run','--detach','--pull=never','--name',container,'--network',docker.network ?? 'none','--cap-drop','ALL','--security-opt','no-new-privileges','--read-only','--user',`${process.getuid!()}:${process.getgid!()}`,'--tmpfs','/tmp:rw,nosuid,nodev','--tmpfs',`/home/agent:rw,nosuid,nodev,uid=${process.getuid!()},gid=${process.getgid!()},mode=0700`,...mounts,...(implementation?['--mount',`type=bind,src=${implementationDirectory},dst=/implementation`,'--mount',`type=bind,src=${join(directory,'mcp')},dst=/orchestrator-mcp,readonly`]:[]),...(tools?['--mount',`type=bind,src=${tools.mcpDirectory},dst=/orchestrator-mcp,readonly`]:[]),...(callableTools.length?['--mount',`type=bind,src=${toolDirectory},dst=/orchestrator-tools,readonly`]:[]),'--mount',`type=bind,src=${stopDirectory},dst=/orchestrator-stop,readonly`,...Object.entries({...options.env,HOME:'/home/agent',GIT_CONFIG_NOSYSTEM:'1',GIT_CONFIG_SYSTEM:'/dev/null',GIT_TERMINAL_PROMPT:'0',GIT_NO_REPLACE_OBJECTS:'1',GIT_NO_LAZY_FETCH:'1'}).flatMap(([key,value])=>['--env',connection && Object.hasOwn(connection.runtimeEnv,key) ? key : `${key}=${value}`]),'--entrypoint','sh',docker.image,'-c','while :; do sleep 3600; done'],connection?.runtimeEnv);
+      const created=await command(['run','--detach','--pull=never','--name',container,'--network',bridge?.network ?? docker.network ?? 'none','--cap-drop','ALL','--security-opt','no-new-privileges','--read-only','--user',`${process.getuid!()}:${process.getgid!()}`,'--tmpfs','/tmp:rw,nosuid,nodev','--tmpfs',`/home/agent:rw,nosuid,nodev,uid=${process.getuid!()},gid=${process.getgid!()},mode=0700`,...mounts,...(implementation?['--mount',`type=bind,src=${implementationDirectory},dst=/implementation`,'--mount',`type=bind,src=${join(directory,'mcp')},dst=/orchestrator-mcp,readonly`]:[]),...(tools?['--mount',`type=bind,src=${tools.mcpDirectory},dst=/orchestrator-mcp,readonly`]:[]),...(callableTools.length?['--mount',`type=bind,src=${toolDirectory},dst=/orchestrator-tools,readonly`]:[]),'--mount',`type=bind,src=${stopDirectory},dst=/orchestrator-stop,readonly`,...Object.entries({...options.env,HOME:'/home/agent',GIT_CONFIG_NOSYSTEM:'1',GIT_CONFIG_SYSTEM:'/dev/null',GIT_TERMINAL_PROMPT:'0',GIT_NO_REPLACE_OBJECTS:'1',GIT_NO_LAZY_FETCH:'1'}).flatMap(([key,value])=>['--env',connection && Object.hasOwn(runtimeEnv,key) ? key : `${key}=${value}`]),'--entrypoint','sh',docker.image,'-c','while :; do sleep 3600; done'],runtimeEnv);
+      if(bridge)await bridge.authorize(created.stdout.trim());
       if(connection) {
         const checked=await command(['exec',container,'sh','-c',"# ORCH_CONNECTION_CHECK\nif [ -e /etc/claude-code/managed-settings.json ] || [ -d /etc/claude-code/managed-settings.d ]; then printf unsupported; else printf ready; fi"]);
         if(checked.stdout!=='ready')throw Error('Selected Claude connection cannot run with image managed settings; use an independently configured image');
@@ -116,7 +125,9 @@ export async function executeRole(records:Records, config:Configuration, executi
       return {worktreePath:sandboxPath,exec:(text,opts)=>new Promise((resolve,reject)=>{
         const cwd=implementation && (!opts?.cwd || opts.cwd==='/home/agent/workspace' || opts.cwd.startsWith('/home/agent/workspace/'))?sandboxPath+(opts?.cwd?.slice('/home/agent/workspace'.length) ?? ''):opts?.cwd ?? sandboxPath;
         const runtimeCommand = connection ? `if [ -e /etc/claude-code/managed-settings.json ] || [ -d /etc/claude-code/managed-settings.d ]; then printf '%s\\n' 'Selected Claude connection cannot run with image managed settings' >&2; exit 78; fi; exec env -i PATH="\${PATH:-/usr/local/bin:/usr/bin:/bin}" ${[...new Set([...Object.keys(connection.env).filter(key=>key!=='PATH'),'HOME','GIT_CONFIG_NOSYSTEM','GIT_CONFIG_SYSTEM','GIT_TERMINAL_PROMPT','GIT_NO_REPLACE_OBJECTS','GIT_NO_LAZY_FETCH'])].map(key=>`${key}="$${key}"`).join(' ')} sh -c '${text.replaceAll("'", "'\\''")}'` : text;
+        if(text.includes('ORCH_EXIT_'))agentStarted=true;
         const child=spawn(binary,['exec','-i','--workdir',cwd,container,'sh','-c',runtimeCommand],{env:{PATH:process.env.PATH},stdio:['pipe','pipe','pipe']});
+        child.once('error',()=>{if(!child.pid && text.includes('ORCH_EXIT_'))agentStarted=false;});
         let stdout='';let stderr='';let line='';
         const consume = (stream:'stdout'|'stderr') => pipeline(child[stream],secrets.stream(),async chunks=>{
           const decoder = new StringDecoder('utf8');
@@ -141,7 +152,9 @@ export async function executeRole(records:Records, config:Configuration, executi
     }});
     const sandbox=await createSandbox({cwd:workspace,branch,baseBranch:sha,sandbox:sandboxProvider});
     if(tools)agent=(provider.configureMcp ?? configureClaudeMcp)(connectionAgent,[...mcp.connections,{service:'orchestrator',configFile:'/orchestrator-mcp/config.json',tools:executableToolIds}]);
-    const result=await runAgent(sandbox,agent,prompt,()=>{if(deadlineTimer)clearTimeout(deadlineTimer)});
+    let bridgeClosed:Promise<void>|undefined;
+    const result=await runAgent(sandbox,agent,prompt,()=>{agentExited=true;bridgeClosed=bridge?.close();bridgeClosed?.catch(()=>{});if(deadlineTimer)clearTimeout(deadlineTimer)});
+    await bridgeClosed;
     const largeOutput=result.output!==null && Buffer.byteLength(result.output)>65536;
     let output=result.output;
     if(largeOutput) {
@@ -192,5 +205,5 @@ export async function executeRole(records:Records, config:Configuration, executi
     if(deadlineError){records.markUnresolved(attempt,deadlineError);return;}
     try{records.finishAttempt(attempt,launched?'unknown':'start_failed',{...lifecycleFacts,error:secrets.redact(error instanceof Error?error.message:'Role launch failed'),...(toolObservationError?{toolObservationError}:{})})}catch(saveError){records.markUnresolved(attempt,saveError)}
   }
-  finally{try{await tools?.close();await toolServer?.close();}finally{if(deadlineTimer)clearTimeout(deadlineTimer);records.endLive(attempt)}}
+  finally{try{if(!agentStarted || agentExited)await bridge?.close();await tools?.close();await toolServer?.close();}finally{if(deadlineTimer)clearTimeout(deadlineTimer);records.endLive(attempt)}}
 }

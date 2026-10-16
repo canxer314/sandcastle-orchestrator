@@ -11,7 +11,7 @@ export async function physicalPath(path: string): Promise<string> {
   }
 }
 
-function contains(parent: string, child: string) {
+export function contains(parent: string, child: string) {
   const path = relative(parent, child);
   return path === '' || (path !== '..' && !path.startsWith(`..${sep}`) && !path.startsWith(sep));
 }

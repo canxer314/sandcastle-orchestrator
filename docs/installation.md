@@ -27,9 +27,20 @@ sandcastle-orchestrator --help
 sandcastle-orchestrator serve --help
 ```
 
-正式命令固定为 `sandcastle-orchestrator`，不会覆盖依赖已有的 `sandcastle` 命令。`--version` 只输出产物版本。无参数、根帮助和子命令帮助不加载配置、不连接 socket，也不创建数据目录。`init`、`doctor`、`demo`、`setup` 尚未发布。
+正式命令固定为 `sandcastle-orchestrator`，不会覆盖依赖已有的 `sandcastle` 命令。`--version` 只输出产物版本。无参数、根帮助和子命令帮助不加载配置、不连接 socket，也不创建数据目录。`init` 和 `doctor` 已可使用，见下节；`setup` 可生成真实项目只读问答入口，见 [setup 指南](setup.md)；`demo` 和 `init --reset-demo` 尚不可用。上述命令状态以本地构建产物为准，不表示已经发布。
 
 远端发布需另行授权。完成包名、scope、public 权限及发布后消费核验后，主渠道将是 `npm install --global @canxer314/sandcastle-orchestrator`；固定版本使用 `npm install --global @canxer314/sandcastle-orchestrator@VERSION`，备选是在 Release 下载同一 tgz 后按上面安装。`VERSION` 不是可直接运行的版本号。npm 与 Release 必须使用同一份已验收产物，不重新打包；registry 404 不证明有发布权限。npx 仅用于临时体验，不作为常驻部署方式。
+
+## 初始化演示资源
+
+```sh
+sandcastle-orchestrator init
+sandcastle-orchestrator doctor
+```
+
+init 创建 `~/.sandcastle-orchestrator/` 下独立的 ESM 配置、data/init.json 标记和已提交演示仓库，写入前显示路径并询问。非交互或 JSON 模式使用 `init --yes`；该选项不跳过安全检查。完整资源重复复用，不覆盖已有或不完整目录。doctor 检查依赖、Docker daemon、配置和镜像，缺条件给修复步骤，不自动安装、拉取或执行容器。真实 Docker/模型尚未据本增量验收。
+
+自定义路径、冲突保护、JSON 输出和未初始化诊断详见[演示初始化与环境检查](https://github.com/canxer314/sandcastle-orchestrator/blob/master/docs/onboarding.md)。尚无 `demo` 自动执行入口，不把 doctor 成功当作测试通过。已有高级配置仍可使用下节的显式 serve 流程。
 
 ## 最小外部可信配置
 
@@ -206,7 +217,7 @@ export default {
 sandcastle-orchestrator serve --config "$CONFIG/config.ts" --data "$DATA"
 ```
 
-provider 扩展继续通过 `Configuration.providers` 使用现有 `AgentProvider` 契约；如果配置 import `@ai-hero/sandcastle` 的 provider，需在配置项目显式安装兼容版本 `@ai-hero/sandcastle@0.12.0`。MCP helper 只在对应 harness 支持时使用，不改变 provider 选择或连接。真实 execution、role binding、镜像与授权策略仍由管理员准备，本票不增加自动 setup。
+provider 扩展继续通过 `Configuration.providers` 使用现有 `AgentProvider` 契约；如果配置 import `@ai-hero/sandcastle` 的 provider，需在配置项目显式安装兼容版本 `@ai-hero/sandcastle@0.12.0`。MCP helper 只在对应 harness 支持时使用，不改变 provider 选择或连接。高级 execution、role binding、镜像与授权策略仍由管理员准备；只读问答可由显式 `setup` 生成参考配置，但不会自动执行。
 
 排障时先检查 `node --version`、配置目录的 `package.json`、自身 `node_modules`、文件名和相对 import 路径。`Cannot find package`/TS2307 通常表示配置自己的依赖未装，不能靠全局 CLI 的 node_modules 解决。`service_failure` 故意不输出任意配置异常和堆栈，防止凭据泄漏；先对配置运行上述类型检查，再在受控环境检查可信配置的 import 和定义。不要把环境变量、token 或含凭据的堆栈贴到日志/Issue。`separate` 错误需要调整目录布局，不能删除锁或绕过真实路径检查。
 
@@ -230,6 +241,8 @@ provider 扩展继续通过 `Configuration.providers` 使用现有 `AgentProvide
 
 本轮 `pnpm run typecheck` 通过；定向安装、maintenance、management、queries、writes 共 5 个文件、157 项通过。最后单独复跑安装文件 8 项通过；指南 14 个 shell 示例经 `sh -n` 语法检查，未据此执行实际维护操作。全套首轮 340 项通过、21 项跳过、1 项失败，失败为未修改的 `pr-analysis` 的 `partial-observation-write` 场景在读取 unknown 时尚未出现预期退出确认字段。未改动该测试或放宽断言，单独复跑该文件 20 项通过，再运行 `pnpm test` 得到 18 个文件通过、1 个文件跳过，341 项通过、21 项 opt-in 跳过。对最终暂存版本再跑并行全套时，`management` 的 ready 等待超时，其余 340 项通过、21 项跳过；这两类间歇失败没有在本票修复，不能只用成功复跑掩盖。最终 `pnpm exec vitest run --no-file-parallelism` 完整串行回归通过，18 个文件通过、1 个文件跳过，341 项通过、21 项 opt-in 跳过，耗时 498.96 秒、exit 0；未过滤用例或放宽断言。
 
+合并前同步 master `201d753` 后，typecheck/build 和 `git diff --check` 通过；安装、maintenance、management、queries、writes、setup、localhost-bridge 共 7 个定向文件、188 项通过。最终完整串行回归为 20 个文件通过、1 个文件跳过，378 项通过、21 项 opt-in 跳过，耗时 444.18 秒、exit 0。安装文件保留两边全部 15 项用例，独立静态复核无确定问题；指南此时共 15 个 shell 示例通过 `sh -n`，未执行实际维护操作。先前基线上的失败和结果保留为历史，不以主线新增测试数覆盖。
+
 复跑命令如下，实际 Docker/模型测试保持 opt-in，不在本票授权范围内：
 
 ```sh
@@ -240,7 +253,7 @@ pnpm test
 pnpm exec vitest run --no-file-parallelism
 ```
 
-未运行真实 Docker、模型、私人连接、真实恢复环境、远端 npm/Release 发布或发布后消费核验。初始化标记和 setup 资源为预置保留 fixture，不证明尚未合并的 init/setup 功能；本票不修改它们，也不验收未来布局版本处理。
+本票未运行真实 Docker、模型、私人连接、真实恢复环境、远端 npm/Release 发布或发布后消费核验。生命周期中的初始化标记和 setup 资源为预置保留 fixture，本身不证明 init/setup 的完整功能或组合验收。合并前已同步包含 #78 init/doctor、#81 localhost bridge、#82 setup 及 #83 教程的 master `201d753`，保留它们的产物消费测试；本票不修改其业务逻辑或接管其真实环境验收，也不验收未来布局版本处理。
 
 ### #75 历史安装验收
 

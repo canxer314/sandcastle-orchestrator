@@ -1,10 +1,12 @@
 import { execFile, spawn, type ChildProcess } from 'node:child_process';
 import { once } from 'node:events';
 import { promisify } from 'node:util';
-import { mkdtemp, mkdir, readFile, readdir, readlink, rm, lstat, stat, symlink, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, readdir, readlink, rm, lstat, stat, symlink, unlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterAll, beforeAll, expect, test } from 'vitest';
+import { Client } from '@modelcontextprotocol/client';
+import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
 
 const exec = promisify(execFile);
 const root = resolve(import.meta.dirname, '..');
@@ -80,28 +82,27 @@ test('help and no-argument discovery need neither configuration nor a service', 
   const data = join(cwd, 'must-not-create');
   await writeFile(config, 'throw new Error("Configuration was executed");');
   const before = await readdir(cwd);
-  const commands = ['serve', 'submit', 'show', 'list', 'logs', 'artifact', 'cancel', 'confirm-stop', 'resolve', 'retry', 'cleanup', 'pause', 'resume', 'maintenance', 'restore-review'];
+  const commands = ['setup', 'serve', 'submit', 'show', 'list', 'logs', 'artifact', 'cancel', 'confirm-stop', 'resolve', 'retry', 'cleanup', 'pause', 'resume', 'maintenance', 'restore-review', 'init', 'doctor'];
   for (const command of [undefined, ...commands]) {
     const result = await exec(bin, [...(command ? [command] : []), '--help', '--config', config, '--data', data, '--socket', join(data, 'absent.sock')], { cwd });
     expect(result.stderr).toBe('');
     expect(result.stdout).toContain('sandcastle-orchestrator');
     expect(result.stdout).toContain('Example:');
     if (command === 'serve') expect(result.stdout).toContain('--maintenance');
-    if (command && command !== 'serve') expect(result.stdout).toContain('--socket');
+    if (command && !['serve', 'setup', 'init', 'doctor'].includes(command)) expect(result.stdout).toContain('--socket');
   }
   const discovery = await exec(bin, [], { cwd });
   for (const command of commands) expect(discovery.stdout).toContain(command);
-  expect(discovery.stdout).toMatch(/init.*doctor.*demo.*setup.*unreleased/i);
+  expect(discovery.stdout).toMatch(/demo.*unreleased/i);
   expect(await readdir(cwd)).toEqual(before);
-  await expect(exec(bin, ['init', '--help'], { cwd })).rejects.toMatchObject({ code: 1 });
 });
 
 test('unknown commands retain JSON errors and cannot match inherited object properties', async () => {
-  for (const command of ['unknown', 'init', 'toString', '__proto__']) {
+  for (const command of ['unknown', 'demo', 'toString', '__proto__']) {
     await expect(exec(bin, [command], { cwd })).rejects.toMatchObject({
       code: 1,
       stdout: '',
-      stderr: `${JSON.stringify({ error: 'Unknown command; use serve, submit, show, list, logs, artifact, cancel, confirm-stop, resolve, retry, cleanup, pause, resume, maintenance or restore-review' })}\n`,
+      stderr: `${JSON.stringify({ error: 'Unknown command; use setup, serve, submit, show, list, logs, artifact, cancel, confirm-stop, resolve, retry, cleanup, pause, resume, maintenance, restore-review, init or doctor' })}\n`,
     });
     await expect(exec(bin, [command, '--help'], { cwd })).rejects.toMatchObject({
       code: 1,
@@ -198,6 +199,180 @@ test('compiled layout protects application, config and checkout physical paths b
     expect((await stat(entry.path)).mode).toBe(entry.mode);
     expect(await readdir(entry.path)).toEqual(entry.files);
   }
+}, 30_000);
+
+test('installed init creates an independent committed demo and reuses complete resources without writing', async () => {
+  const home = join(directory, 'onboarding-home');
+  const env = { ...process.env, HOME: home };
+  const result = await exec(bin, ['init', '--yes', '--json'], { cwd, env });
+  expect(result.stderr).toContain('Will create:');
+  const initialized = JSON.parse(result.stdout);
+  expect(initialized).toMatchObject({ ok: true, status: 'created', paths: {
+    config: join(home, '.sandcastle-orchestrator/config/config.ts'),
+    data: join(home, '.sandcastle-orchestrator/data'),
+    demoRepo: join(home, '.sandcastle-orchestrator/demo-repo'),
+  } });
+  const { config, data, demoRepo } = initialized.paths;
+  expect(JSON.parse(await readFile(join(config, '../package.json'), 'utf8'))).toMatchObject({ type: 'module' });
+  const marker = JSON.parse(await readFile(join(data, 'init.json'), 'utf8'));
+  expect(marker).toMatchObject({ layoutVersion: 1, config, data, demoRepo, repoId: 'demo', capabilityId: 'demo-test' });
+  await exec(process.execPath, ['--test', 'test.cjs'], { cwd: demoRepo });
+  const sha = (await exec('git', ['-C', demoRepo, 'rev-parse', '--verify', 'HEAD'])).stdout.trim();
+  expect(sha).toMatch(/^[a-f0-9]{40}$/);
+  const files = [config, join(config, '../package.json'), join(data, 'init.json'), join(demoRepo, '.git/index')];
+  const before = await Promise.all(files.map(async file => ({ content: await readFile(file), mtime: (await stat(file)).mtimeMs })));
+  const reused = await exec(bin, ['init', '--data', data, '--yes', '--json'], { cwd, env });
+  expect(JSON.parse(reused.stdout)).toMatchObject({ ok: true, status: 'reused' });
+  expect(await Promise.all(files.map(async file => ({ content: await readFile(file), mtime: (await stat(file)).mtimeMs })))).toEqual(before);
+});
+
+test('installed onboarding rejects unsafe paths and incomplete resources without changing existing files', async () => {
+  const base = join(directory, 'onboarding-protection');
+  await mkdir(base);
+  const config = join(base, 'config/config.ts'); const data = join(base, 'data'); const repo = join(base, 'repo');
+  const args = ['--config', config, '--data', data, '--demo-repo', repo];
+  await expect(exec(bin, ['init', ...args, '--json'], { cwd })).rejects.toMatchObject({ code: 1, stdout: expect.stringContaining('--yes') });
+  expect(await readdir(base)).toEqual([]);
+  await expect(exec(bin, ['init', ...args], { cwd })).rejects.toMatchObject({ code: 1, stdout: expect.stringContaining('--yes') });
+  expect(await readdir(base)).toEqual([]);
+  for (const extra of [['extra'], ['--reset-demo'], ['--socket', '/absent'], ['--offline'], ['--human', '--json'], ['--repo', 'other']]) {
+    await expect(exec(bin, ['init', ...args, '--yes', ...extra], { cwd })).rejects.toMatchObject({ code: 1 });
+    expect(await readdir(base)).toEqual([]);
+  }
+  for (const unsafe of [join(base, 'config/nested'), join(repo, 'nested'), base, installed, join(installed, 'nested')]) {
+    await expect(exec(bin, ['init', ...args, '--data', unsafe, '--yes', '--json'], { cwd })).rejects.toMatchObject({ code: 1, stdout: expect.stringContaining('separate') });
+    expect(await readdir(base)).toEqual([]);
+  }
+  const collision = join(base, 'config/package.json');
+  await expect(exec(bin, ['init', ...args, '--config', collision, '--yes', '--json'], { cwd })).rejects.toMatchObject({ code: 1, stdout: expect.stringContaining('package.json') });
+  expect(await readdir(base)).toEqual([]);
+  await expect(exec(bin, ['init', ...args, '--config', join(base, 'config/config.js'), '--yes', '--json'], { cwd })).rejects.toMatchObject({ code: 1, stdout: expect.stringContaining('.ts or .mts') });
+  expect(await readdir(base)).toEqual([]);
+  const checkout = join(base, 'business'); await mkdir(checkout); await exec('git', ['init', checkout]);
+  await expect(exec(bin, ['init', ...args, '--demo-repo', join(checkout, 'demo'), '--yes', '--json'], { cwd })).rejects.toMatchObject({ code: 1, stdout: expect.stringContaining('Git checkout') });
+  expect(await readdir(checkout)).toEqual(['.git']);
+  const broken = join(base, 'broken-business'); await mkdir(broken); await writeFile(join(broken, '.git'), 'gitdir: /missing-git-metadata\n');
+  await expect(exec(bin, ['init', ...args, '--demo-repo', join(broken, 'demo'), '--yes', '--json'], { cwd })).rejects.toMatchObject({ code: 1, stdout: expect.stringContaining('Git checkout') });
+  expect(await readdir(broken)).toEqual(['.git']);
+  await mkdir(data); await writeFile(join(data, 'keep'), 'evidence');
+  await expect(exec(bin, ['init', ...args, '--yes', '--json'], { cwd })).rejects.toMatchObject({ code: 1, stdout: expect.stringContaining('preserve') });
+  expect(await readdir(base)).toEqual(['broken-business', 'business', 'data']);
+  expect(await readFile(join(data, 'keep'), 'utf8')).toBe('evidence');
+  await expect(exec(bin, ['doctor', ...args, '--json'], { cwd })).rejects.toMatchObject({ code: 1, stdout: expect.stringContaining('Existing or incomplete resource') });
+}, 30_000);
+
+test('installed doctor inspects prerequisites before init and initialized templates work through CLI/socket', async () => {
+  const base = join(directory, 'onboarding-doctor'); const adapters = join(base, 'bin');
+  await mkdir(adapters, { recursive: true });
+  const calls = join(base, 'docker-calls');
+  await writeFile(join(adapters, 'docker'), `#!/bin/sh
+printf '%s\\n' "$*" >> ${JSON.stringify(calls)}
+case "$1" in
+  --version) echo 'Docker controlled';;
+  info) echo '"controlled"';;
+  image) [ "$3" = node:22.22-alpine ] || exit 8; echo '[]';;
+  run) echo 'controlled demo test';;
+  inspect) echo '{"Running":false,"Status":"exited","ExitCode":0}';;
+  *) exit 9;;
+esac
+`, { mode: 0o700 });
+  const env = { ...process.env, PATH: `${adapters}:${process.env.PATH}` };
+  const config = join(base, 'config/config.ts'); const data = join(base, 'data'); const repo = join(base, 'repo');
+  const args = ['--config', config, '--data', data, '--demo-repo', repo];
+  const before = await readdir(base);
+  await expect(exec(bin, ['doctor', ...args, '--json'], { cwd, env })).rejects.toMatchObject({ code: 1, stderr: '', stdout: expect.stringContaining('uninitialized') });
+  expect(await readdir(base)).toEqual([...before, 'docker-calls']);
+  expect((await readFile(calls, 'utf8')).split('\n').filter(Boolean)).toEqual(['--version', 'info --format {{json .ServerVersion}}', 'image inspect node:22.22-alpine']);
+  await exec(bin, ['init', ...args, '--yes', '--json'], { cwd, env });
+  const result = await exec(bin, ['doctor', '--data', data, '--json'], { cwd, env });
+  expect(JSON.parse(result.stdout)).toMatchObject({ ok: true, paths: { config, data, demoRepo: repo } });
+  expect(result.stderr).toContain(`Loading trusted TypeScript configuration (executes code): ${config}`);
+  const child = await start(config, data, env.PATH);
+  const sha = (await exec('git', ['-C', repo, 'rev-parse', 'HEAD'])).stdout.trim();
+  const receipt = JSON.parse((await exec(bin, ['submit', '--socket', join(data, 'control.sock'), '--repo', 'demo', '--capability', 'demo-test', '--input', JSON.stringify(sha), '--source', 'init-test'], { cwd })).stdout);
+  expect(receipt.accepted).toBe(true);
+  await expect.poll(async () => JSON.parse((await exec(bin, ['show', receipt.executionId, '--socket', join(data, 'control.sock')], { cwd })).stdout), { timeout: 10_000 }).toMatchObject({ execution: { status: 'completed' }, attempts: [{ actualSha: sha, contract: 'valid', business: { passed: true, exitCode: 0 } }] });
+  expect(JSON.parse((await exec(bin, ['logs', receipt.executionId, '--socket', join(data, 'control.sock')], { cwd })).stdout)).toMatchObject({ complete: true, stdout: 'controlled demo test\n' });
+  await stop(child);
+
+  // Same physical resources, custom data marker discovery and edits are all allowed.
+  const alias = join(base, 'alias'); await symlink(base, alias);
+  await writeFile(config, (await readFile(config, 'utf8')).replace('demo-config-v1', 'user-edited') + '\nconsole.log("user configuration diagnostic");\n');
+  await writeFile(join(repo, 'user-file'), 'keep my changes');
+  await exec('git', ['-C', repo, 'add', '.']);
+  await exec('git', ['-C', repo, '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', 'commit', '-m', 'user changes']);
+  expect(JSON.parse((await exec(bin, ['doctor', '--data', join(alias, 'data'), '--config', join(alias, 'config/config.ts'), '--demo-repo', join(alias, 'repo'), '--json'], { cwd, env })).stdout)).toMatchObject({ ok: true });
+  expect(JSON.parse((await exec(bin, ['init', '--data', data, '--yes', '--json'], { cwd, env })).stdout)).toMatchObject({ status: 'reused' });
+  await expect(exec(bin, ['doctor', '--data', data, '--config', join(base, 'other/config.ts'), '--json'], { cwd, env })).rejects.toMatchObject({ code: 1, stdout: expect.stringContaining('conflicts') });
+  const markerPath = join(data, 'init.json'); const marker = await readFile(markerPath, 'utf8');
+  await writeFile(markerPath, marker.replace('"layoutVersion": 1', '"layoutVersion": 900'));
+  await expect(exec(bin, ['init', '--data', data, '--yes', '--json'], { cwd, env })).rejects.toMatchObject({ code: 1, stdout: expect.stringContaining('matching CLI version') });
+  expect(await readFile(markerPath, 'utf8')).toContain('900');
+  await writeFile(markerPath, marker);
+  await unlink(config);
+  await expect(exec(bin, ['init', '--data', data, '--yes', '--json'], { cwd, env })).rejects.toMatchObject({ code: 1 });
+  expect(await readFile(markerPath, 'utf8')).toBe(marker);
+  expect(await readFile(join(repo, 'user-file'), 'utf8')).toBe('keep my changes');
+}, 30_000);
+
+test('installed onboarding reports missing dependencies without creating resources or pulling images', async () => {
+  const base = join(directory, 'onboarding-missing'); const adapters = join(base, 'bin');
+  await mkdir(adapters, { recursive: true });
+  await symlink(process.execPath, join(adapters, 'node'));
+  const env = { ...process.env, PATH: adapters };
+  const args = ['--config', join(base, 'config/config.ts'), '--data', join(base, 'data'), '--demo-repo', join(base, 'repo')];
+  await expect(exec(bin, ['init', ...args, '--yes', '--json'], { cwd, env })).rejects.toMatchObject({ code: 1, stdout: expect.stringContaining('apt-get install git') });
+  expect(await readdir(base)).toEqual(['bin']);
+  await expect(exec(bin, ['doctor', ...args, '--json'], { cwd, env })).rejects.toMatchObject({ code: 1, stdout: expect.stringContaining('docker pull node:22.22-alpine') });
+  expect(await readdir(base)).toEqual(['bin']);
+  await symlink((await exec('which', ['git'])).stdout.trim(), join(adapters, 'git'));
+  await symlink((await exec('which', ['flock'])).stdout.trim(), join(adapters, 'flock'));
+  await writeFile(join(adapters, 'docker'), `#!/bin/sh
+case "$1" in
+  --version|info) echo controlled;;
+  image) exit 1;;
+  *) echo forbidden-docker-operation >&2; exit 9;;
+esac
+`, { mode: 0o700 });
+  await exec(bin, ['init', ...args, '--yes', '--json'], { cwd, env });
+  let failure: any;
+  try { await exec(bin, ['doctor', '--data', join(base, 'data'), '--json'], { cwd, env }); } catch (error) { failure = error; }
+  expect(failure.code).toBe(1);
+  const report = JSON.parse(failure.stdout);
+  expect(report.checks).toContainEqual(expect.objectContaining({ name: 'image:node:22.22-alpine', ok: false, fix: expect.stringContaining('docker pull node:22.22-alpine') }));
+  // Absence and incomplete markers must preserve both repository and configuration.
+  const config = join(base, 'config/config.ts'); const original = await readFile(config, 'utf8');
+  const marker = join(base, 'data/init.json');
+  await writeFile(marker, '{"layoutVersion":1}');
+  await expect(exec(bin, ['init', ...args, '--yes', '--json'], { cwd, env })).rejects.toMatchObject({ code: 1, stdout: expect.stringContaining('Incomplete') });
+  await unlink(marker);
+  await expect(exec(bin, ['init', ...args, '--yes', '--json'], { cwd, env })).rejects.toMatchObject({ code: 1, stdout: expect.stringContaining('preserve') });
+  expect(await readFile(config, 'utf8')).toBe(original);
+});
+
+test('installed init asks on a terminal, preserves a decline and resolves relative paths from cwd', async () => {
+  const base = join(directory, 'onboarding-interactive'); await mkdir(base);
+  const command = `'${bin}' init --config config/config.ts --data data --demo-repo repo`;
+  const interact = async (answer: string) => {
+    const child = spawn('script', ['-q', '-e', '-c', command, '/dev/null'], { cwd: base });
+    children.add(child);
+    let output = ''; let answered = false;
+    child.stdout.on('data', chunk => {
+      output += chunk;
+      if (!answered && output.includes('[y/N]')) { answered = true; child.stdin.end(`${answer}\n`); }
+    });
+    const code = await new Promise<number | null>((resolve, reject) => {
+      const timer = setTimeout(() => { child.kill(); reject(Error(`Confirmation timed out: ${output}`)); }, 10_000);
+      child.once('error', error => { clearTimeout(timer); reject(error); });
+      child.once('exit', code => { clearTimeout(timer); resolve(code); });
+    });
+    children.delete(child);
+    return { code, output };
+  };
+  expect(await interact('no')).toMatchObject({ code: 1, output: expect.stringContaining('declined') });
+  expect(await readdir(base)).toEqual([]);
+  expect(await interact('yes')).toMatchObject({ code: 0, output: expect.stringContaining(join(base, 'config/config.ts')) });
+  expect(JSON.parse(await readFile(join(base, 'data/init.json'), 'utf8'))).toMatchObject({ data: join(base, 'data'), demoRepo: join(base, 'repo') });
 }, 30_000);
 
 test('installed CLI retains fixed-SHA evidence and a paused queue across reinstall and local version replacement with a controlled Docker adapter', async () => {
@@ -373,3 +548,162 @@ test('npm install, uninstall, reinstall and local version replacement preserve d
   await npm('install', original);
   expect((await exec(lifecycleBin, ['--version'], {cwd, env})).stdout).toBe(`${manifest.version}\n`);
 }, 240_000);
+
+test('readonly tutorial works as a package consumer through submit, show and report artifacts', async () => {
+  const project = join(directory, 'readonly-tutorial');
+  const checkout = join(directory, 'tutorial-checkout');
+  const data = join(directory, 'tutorial-data');
+  await mkdir(project); await mkdir(checkout);
+  await writeFile(join(project, 'package.json'), '{"private":true,"type":"module"}');
+  await exec('npm', ['install', '--no-audit', '--no-fund', join(directory, packed.filename), '@ai-hero/sandcastle@0.12.0', 'zod@4.6.5', 'typescript@5.9.3', '@types/node@24.19.1'], {cwd:project, timeout:180_000});
+  await writeFile(join(project, 'config.ts'), await readFile(join(root, 'examples/readonly-role/config.ts')));
+  await writeFile(join(project, 'composition.ts'), await readFile(join(root, 'examples/readonly-role/composition.ts')));
+  await exec('git', ['init', checkout], {cwd});
+  await writeFile(join(checkout, 'README.md'), '# Authorized fixture\n');
+  await exec('git', ['-C', checkout, 'add', '.'], {cwd});
+  await exec('git', ['-C', checkout, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-m', 'fixture'], {cwd});
+  const git = async (...args: string[]) => (await exec('git', ['-C', checkout, ...args], {cwd})).stdout;
+  const sha = (await git('rev-parse', 'HEAD')).trim();
+  const before = await git('status', '--porcelain=v1', '--untracked-files=all');
+  const report = {summary:'The fixture has a README.', evidence:['README.md:1'], limitations:['Controlled adapter, not a model conclusion.']};
+  const docker = join(project, 'docker');
+  const calls = join(project, 'docker-calls');
+  const gate = join(project, 'tool-gate');
+  const release = join(project, 'tool-release');
+  await writeFile(docker, `#!/bin/sh
+printf '%s\\n' "$*" >> ${JSON.stringify(calls)}
+case "$1" in
+run) case "$*" in *--detach*) echo controlled-container;; *) echo '["README.md"]';; esac;;
+exec) case "$*" in
+*ORCH_EXIT_*) if [ -f ${JSON.stringify(gate)} ]; then while [ ! -f ${JSON.stringify(release)} ]; do sleep 0.02; done; fi; marker=$(printf '%s' "$*" | grep -o 'ORCH_EXIT_[a-f0-9]*' | head -1); printf '%s\\n%s:0\\n' '${JSON.stringify(report)}' "$marker";;
+*rev-parse*) echo ${sha};;
+esac;;
+inspect) echo '{"Running":false,"Status":"exited","ExitCode":0}';;
+esac
+`, {mode:0o700});
+  // Only the provider and Docker facility are controlled; the tutorial role is unchanged.
+  const wrapper = join(project, 'controlled.ts');
+  await writeFile(wrapper, `
+    Object.assign(process.env, {
+      TUTORIAL_REPO:${JSON.stringify(checkout)}, TUTORIAL_IMAGE:'controlled:image',
+      TUTORIAL_MODEL:'controlled-model', TUTORIAL_CONNECTION:${JSON.stringify(join(project, 'not-read.json'))},
+      TUTORIAL_CONFIG_VERSION:'tutorial-consumer'
+    });
+    const {default: config} = await import('./config.js');
+    config.environments[0]!.docker = {...config.environments[0]!.docker!, binary:${JSON.stringify(docker)}, network:'none'};
+    config.providers![0]!.agent = {name:'controlled', env:{}, captureSessions:false,
+      buildPrintCommand(){return {command:'controlled-agent'};},
+      parseStreamLine(line: string){return [{type:'result', result:line}];}
+    };
+    delete config.providers![0]!.connection;
+    export default config;
+  `);
+  await exec(process.execPath, [join(project, 'node_modules/typescript/bin/tsc'), '--noEmit', '--strict', '--skipLibCheck', '--module', 'NodeNext', '--target', 'ES2023', join(project, 'config.ts'), join(project, 'composition.ts'), wrapper], {cwd:project});
+  const child = await start(wrapper, data);
+  const socket = join(data, 'control.sock');
+  const cli = async (...args: string[]) => JSON.parse((await exec(bin, [...args, '--socket', socket], {cwd})).stdout);
+  const submit = (input: unknown) => cli('submit', '--repo', 'tutorial', '--capability', 'repository-question', '--input', JSON.stringify(input), '--source', 'tutorial-test');
+  expect(await submit({sha:'HEAD', question:'What is here?'})).toMatchObject({accepted:false});
+  expect(await submit({sha, question:''})).toMatchObject({accepted:false});
+  expect(await submit({sha, question:'What is here?', command:'publish'})).toMatchObject({accepted:false});
+  const receipt = await submit({sha, question:'What is here?'});
+  expect(receipt.accepted).toBe(true);
+  await expect.poll(() => cli('show', receipt.executionId), {timeout:15_000}).toMatchObject({
+    request:{repo:'tutorial', capability:'repository-question', input:{sha, question:'What is here?'}},
+    execution:{status:'completed'}, attempts:[{
+      kind:'agent', actualSha:sha, workspaceMode:'readonly', configVersion:'tutorial-consumer',
+      provider:'question-provider', runState:'completed', exitCode:0, contract:'valid', business:report,
+    }],
+  });
+  const artifact = await cli('artifact', receipt.executionId, '--name', 'report.txt');
+  expect(artifact).toMatchObject({availability:'available', actualSha:sha, encoding:'base64'});
+  expect(JSON.parse(Buffer.from(artifact.content, 'base64').toString())).toEqual(report);
+  expect(await cli('logs', receipt.executionId)).toMatchObject({complete:true});
+  const commands = await readFile(calls, 'utf8');
+  expect(commands).toContain('--read-only');
+  expect(commands).toContain(',readonly');
+  expect(commands).toContain('--network none');
+  expect(commands).not.toContain('dst=/implementation');
+  expect((await git('rev-parse', 'HEAD')).trim()).toBe(sha);
+  expect(await git('status', '--porcelain=v1', '--untracked-files=all')).toBe(before);
+  expect(await readFile(join(checkout, 'README.md'), 'utf8')).toBe('# Authorized fixture\n');
+  await stop(child);
+
+  const composed = join(project, 'controlled-composition.ts');
+  await writeFile(composed, `import './controlled.js'; export {default} from './composition.js';`);
+  const composedChild = await start(composed, data, `${project}:${process.env.PATH}`);
+  expect(await cli('submit', '--repo', 'tutorial', '--capability', 'list-root', '--input', '{"command":"publish"}', '--source', 'tutorial-test')).toMatchObject({accepted:false});
+  const listing = await cli('submit', '--repo', 'tutorial', '--capability', 'list-root', '--input', JSON.stringify(sha), '--source', 'tutorial-test');
+  expect(listing.accepted).toBe(true);
+  await expect.poll(() => cli('show', listing.executionId), {timeout:15_000}).toMatchObject({
+    execution:{status:'completed'}, attempts:[{actualSha:sha, contract:'valid', business:{actualSha:sha, entries:['README.md']}}],
+  });
+  await writeFile(gate, 'wait for controlled tool call');
+  const composedReceipt = await submit({sha, question:'What is here?'});
+  expect(composedReceipt.accepted).toBe(true);
+  let detail: any;
+  await expect.poll(async () => {
+    detail = await cli('show', composedReceipt.executionId);
+    return detail.attempts[0]?.mcpDirectory;
+  }, {timeout:15_000}).toBeTruthy();
+  await expect.poll(() => readFile(calls, 'utf8'), {timeout:15_000}).toContain("--mcp-config '/orchestrator-mcp/config.json'");
+  const client = new Client({name:'tutorial-controlled-harness', version:'1'});
+  try {
+    await client.connect(new StdioClientTransport({command:process.execPath, args:[
+      join(detail.attempts[0].mcpDirectory, 'bridge.cjs'),
+      join(detail.attempts[0].mcpDirectory, 'tools.sock'),
+    ]}));
+    expect((await client.listTools()).tools.map(tool => tool.name)).toContain('list_root');
+    const result = await client.callTool({name:'list_root', arguments:{}}) as any;
+    expect(result.isError).not.toBe(true);
+    expect(JSON.parse(result.content[0].text)).toMatchObject({
+      runState:'completed', contract:'valid', actualSha:sha,
+      business:{actualSha:sha, entries:['README.md']},
+    });
+  } finally {
+    await client.close();
+    await writeFile(release, 'tool completed');
+  }
+  await expect.poll(() => cli('show', composedReceipt.executionId), {timeout:15_000}).toMatchObject({
+    execution:{status:'completed'}, attempts:[{actualSha:sha, contract:'valid', business:report, toolCalls:[{
+      id:'1', tool:'list_root', capability:'list-root', actualSha:sha, runState:'completed', contract:'valid',
+    }]}],
+  });
+  expect(await cli('logs', composedReceipt.executionId, '--call', '1')).toMatchObject({complete:true, stdout:'["README.md"]\n'});
+  const composedReport = await cli('artifact', composedReceipt.executionId, '--name', 'report.txt');
+  expect(JSON.parse(Buffer.from(composedReport.content, 'base64').toString())).toEqual(report);
+  await stop(composedChild);
+}, 240_000);
+
+test('installed setup generates consumable external config with inherited model and explicit file submission', async () => {
+  const repo = join(directory, 'setup-project'); const home = join(directory, 'setup-home');
+  await mkdir(repo); await mkdir(home);
+  await exec('git', ['init', '-q', repo], {cwd});
+  await writeFile(join(repo, 'README.md'), '# Package setup fixture\n');
+  await exec('git', ['-C', repo, 'add', '.'], {cwd});
+  await exec('git', ['-C', repo, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'fixture'], {cwd});
+  const sha = (await exec('git', ['-C', repo, 'rev-parse', 'HEAD'], {cwd})).stdout.trim();
+  const generated = await exec(bin, ['setup', '--project', repo, '--yes', '--json', '--connection-environment'], {cwd, env: {...process.env, HOME: home}});
+  const setup = JSON.parse(generated.stdout);
+  expect(setup.project.sha).toBe(sha);
+  expect(setup.commands.serve).toContain(setup.paths.config);
+  expect(setup.commands.submit).toContain('--input-file');
+  const config = await readFile(setup.paths.config, 'utf8');
+  expect(config).toContain(new URL('dist/index.js', `file://${installed}/`).href);
+  expect(config).not.toContain(root);
+  const child = spawn(bin, ['serve', '--config', setup.paths.config, '--data', setup.paths.data, '--maintenance', 'paused'], {cwd});
+  children.add(child); let errors = '';
+  child.stderr!.on('data', chunk => errors += chunk);
+  await new Promise<void>((done, reject) => {
+    const timer = setTimeout(() => reject(Error(errors || 'not ready')), 10000);
+    child.stdout!.on('data', chunk => {if (String(chunk).includes('ready')) {clearTimeout(timer); done();}});
+    child.once('exit', () => {clearTimeout(timer); reject(Error(errors));});
+  });
+  await exec(bin, ['resume', '--data', setup.paths.data, '--target', 'admission', '--source', 'package-setup', '--reason', 'validate admission only', '--json'], {cwd});
+  // Starts remain paused: no real connections or Docker.
+  const receipt = JSON.parse((await exec(bin, ['submit', '--data', setup.paths.data, '--repo', setup.repo, '--capability', setup.role, '--source', 'package-setup', '--input-file', setup.paths.input, '--json'], {cwd})).stdout);
+  expect(receipt.accepted).toBe(true);
+  const detail = JSON.parse((await exec(bin, ['show', receipt.executionId, '--data', setup.paths.data], {cwd})).stdout);
+  expect(detail).toMatchObject({request: {input: {commit: sha, question: '说明这个项目的主要模块及调用关系'}}, execution: {status: 'queued'}, attempts: []});
+  await stop(child);
+}, 20000);
