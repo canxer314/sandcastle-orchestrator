@@ -27,7 +27,7 @@ sandcastle-orchestrator --help
 sandcastle-orchestrator serve --help
 ```
 
-正式命令固定为 `sandcastle-orchestrator`，不会覆盖依赖已有的 `sandcastle` 命令。`--version` 只输出产物版本。无参数、根帮助和子命令帮助不加载配置、不连接 socket，也不创建数据目录。`init` 和 `doctor` 已可使用，见下节；`setup` 可生成真实项目只读问答入口，见 [setup 指南](setup.md)；`demo` 和 `init --reset-demo` 尚不可用。上述命令状态以本地构建产物为准，不表示已经发布。
+正式命令固定为 `sandcastle-orchestrator`，不会覆盖依赖已有的 `sandcastle` 命令。`--version` 只输出产物版本。无参数、根帮助和子命令帮助不加载配置、不连接 socket，也不创建数据目录。`init` 和 `doctor` 已可使用，见下节；`setup` 可生成真实项目只读问答入口，见 [setup 指南](setup.md)；`demo` 和 `init --reset-demo` 已可使用，见 [demo/reset 指南](demo.md)。上述命令状态以本地构建产物为准，不表示已经发布。
 
 远端发布需另行授权。完成包名、scope、public 权限及发布后消费核验后，主渠道将是 `npm install --global @canxer314/sandcastle-orchestrator`；固定版本使用 `npm install --global @canxer314/sandcastle-orchestrator@VERSION`，备选是在 Release 下载同一 tgz 后按上面安装。`VERSION` 不是可直接运行的版本号。npm 与 Release 必须使用同一份已验收产物，不重新打包；registry 404 不证明有发布权限。npx 仅用于临时体验，不作为常驻部署方式。
 
@@ -173,7 +173,7 @@ sandcastle-orchestrator resume --socket "$RESTORED_DATA/control.sock" --target a
 npm uninstall --global --prefix "$PREFIX" @canxer314/sandcastle-orchestrator
 ```
 
-卸载不会删除配置、完整 data、初始化标记、输入、演示或真实仓库、attempt 目录、日志、产物、镜像和证据容器，也不修改 harness 或 CC-Switch。不要运行笼统的递归删除命令。若确需删除资源，先按实际路径逐项确认没有运行或待核对执行，再按组织的数据保留规则手工处理；npm 不会扫描或清理自定义路径。现有 `cleanup` 边界不变；规划中的 `init --reset-demo` 仅重建演示仓库，不能用于升级配置、清空 data 或 purge，当前基线尚未提供该入口。
+卸载不会删除配置、完整 data、初始化标记、输入、演示或真实仓库、attempt 目录、日志、产物、镜像和证据容器，也不修改 harness 或 CC-Switch。不要运行笼统的递归删除命令。若确需删除资源，先按实际路径逐项确认没有运行或待核对执行，再按组织的数据保留规则手工处理；npm 不会扫描或清理自定义路径。现有 `cleanup` 边界不变；`init --reset-demo` 仅在明确确认后重建演示仓库，不能用于升级配置、清空 data 或 purge；有服务占用或未确认停止的执行时拒绝操作。
 
 配置 `version`、初始化布局版本与数据库结构不是同一种版本。本轮不改配置接口或记录格式，保留既有补表、迁移和恢复兼容路径；已支持的 fixture 与 revision 范围以对应测试为准，范围之外未验收。此处不新增 backup、rollback、purge 或自动迁移命令。
 

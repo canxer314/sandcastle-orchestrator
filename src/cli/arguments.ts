@@ -3,12 +3,12 @@ import { validateScheduledAt } from '../submission.js';
 export type Values = Record<string, string | undefined>;
 
 export function validateOptions(command: string, positionals: string[], values: Record<string, unknown>) {
-  const onboarding = command === 'init' || command === 'doctor';
-  if (!onboarding && (values.yes !== undefined || values['demo-repo'] !== undefined)) throw Error(`--yes and --demo-repo only support init/doctor`);
+  const onboarding = ['init', 'doctor', 'demo'].includes(command);
+  if (!onboarding && (values.yes !== undefined || values['demo-repo'] !== undefined || values['reset-demo'] !== undefined)) throw Error(`--yes and --demo-repo only support init/doctor/demo`);
   if (onboarding) {
     if (positionals.length !== 1) throw Error(`Unexpected positional argument for ${command}`);
     if (values.human && values.json) throw Error('--human and --json are mutually exclusive');
-    const allowed = ['config', 'data', 'demo-repo', 'human', 'json', 'help', ...(command === 'init' ? ['yes'] : [])];
+    const allowed = ['config', 'data', 'demo-repo', 'human', 'json', 'help', ...(command === 'init' ? ['yes', 'reset-demo'] : [])];
     for (const name of Object.keys(values)) if (!allowed.includes(name)) throw Error(`--${name} is not supported for ${command}`);
     return;
   }

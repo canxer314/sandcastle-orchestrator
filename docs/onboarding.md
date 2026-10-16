@@ -1,6 +1,6 @@
 # 演示初始化与环境检查
 
-本阶段提供 `init` 和 `doctor`。`demo`、`setup`、`init --reset-demo` 尚不可用，不要把环境检查通过当成测试已经执行。安装仍见[安装说明](installation.md)，目前只验证本地 tgz，未发布 npm/Release。
+本阶段提供 `init` 和 `doctor`。检查完成后可显式运行 `demo`，重置使用 `init --reset-demo`，详见[演示测试与重置](demo.md)。真实项目入口见 [setup 指南](setup.md)。不要把环境检查通过当成测试已经执行。安装仍见[安装说明](installation.md)，目前只验证本地 tgz，未发布 npm/Release。
 
 ```sh
 sandcastle-orchestrator init

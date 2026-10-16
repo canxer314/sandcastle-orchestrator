@@ -10,7 +10,7 @@ let serving = false;
 try {
   const { values: parsed, positionals } = parseArgs({
     allowPositionals: true,
-    options: {yes: {type: 'boolean'}, 'non-interactive': {type: 'boolean'}, 'reuse-local-claude': {type: 'boolean'}, 'connection-environment': {type: 'boolean'}, 'reference-only': {type: 'boolean'}, human: {type: 'boolean'}, json: {type: 'boolean'}, offline: {type: 'boolean'}, help: {type: 'boolean', short: 'h'}, version: {type: 'boolean', short: 'v'}, ...Object.fromEntries(['project', 'input-path', 'question', 'image', 'model', 'connection-settings', 'data', 'config', 'demo-repo', 'socket', 'repo', 'capability', 'input', 'input-file', 'source', 'status', 'deduplication-key', 'scheduled-at', 'attempt', 'call', 'name', 'reason', 'handling', 'external-results', 'offset', 'target', 'maintenance', 'backup-point'].map(name => [name, { type: 'string' as const }]))},
+    options: {'reset-demo': {type: 'boolean'}, yes: {type: 'boolean'}, 'non-interactive': {type: 'boolean'}, 'reuse-local-claude': {type: 'boolean'}, 'connection-environment': {type: 'boolean'}, 'reference-only': {type: 'boolean'}, human: {type: 'boolean'}, json: {type: 'boolean'}, offline: {type: 'boolean'}, help: {type: 'boolean', short: 'h'}, version: {type: 'boolean', short: 'v'}, ...Object.fromEntries(['project', 'input-path', 'question', 'image', 'model', 'connection-settings', 'data', 'config', 'demo-repo', 'socket', 'repo', 'capability', 'input', 'input-file', 'source', 'status', 'deduplication-key', 'scheduled-at', 'attempt', 'call', 'name', 'reason', 'handling', 'external-results', 'offset', 'target', 'maintenance', 'backup-point'].map(name => [name, { type: 'string' as const }]))},
   });
   if (parsed.version) {
     console.log(JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8')).version);
@@ -32,6 +32,8 @@ try {
       if (command === 'init' || command === 'doctor') {
         const { onboarding } = await import('./cli/onboarding.js');
         await onboarding(command, parsed);
+      } else if (command === 'demo') {
+        await (await import('./cli/demo.js')).demo(parsed);
       } else if (command === 'serve') {
         serving = true;
         const { runService } = await import('./cli/serve.js');
