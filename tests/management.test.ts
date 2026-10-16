@@ -7,6 +7,30 @@ import { join, resolve } from 'node:path';
 import { once } from 'node:events';
 import { afterEach, expect, test } from 'vitest';
 
+test('human file submissions use real service receipts and source-key queries without waiting for execution', async () => {
+  const f = await fixture(); await start(f);
+  const input = join(f.dir, 'input.json'); await writeFile(input, '"fixed-sha"');
+  const args = ['submit', '--human', '--data', f.dir, '--repo', 'alpha', '--capability', 'test-commit', '--source', 'manual', '--deduplication-key', 'receipt-77', '--input-file', input];
+  const accepted = await cli(args);
+  expect(accepted.code, accepted.stderr).toBe(0); expect(accepted.stdout).toContain('Acceptance: accepted');
+  const matches = await cli(['show', '--data', f.dir, '--source', 'manual', '--deduplication-key', 'receipt-77']);
+  const [detail] = JSON.parse(matches.stdout);
+  expect(detail).toMatchObject({accepted:true, request:{input:'fixed-sha'}, execution:{status:'queued'}});
+  expect(accepted.stdout).toContain(detail.execution.id);
+  const duplicate = await cli(args);
+  expect(duplicate.code, duplicate.stderr).toBe(0); expect(duplicate.stdout).toContain(detail.execution.id);
+  expect(JSON.parse((await cli(['list', '--data', f.dir])).stdout)).toHaveLength(1);
+  const rejected = await cli([...args.filter(value => value !== '--human'), '--input', '42']);
+  expect(rejected.code).toBe(1); // Conflicting input is refused before creating a request.
+  await writeFile(input, '42');
+  const humanRejection = await cli([...args.slice(0, -2), '--input', '42', '--deduplication-key', 'rejection-77']);
+  expect(humanRejection.code, humanRejection.stderr).toBe(1);
+  expect(humanRejection.stdout).toContain('Expected commit text');
+  const cancelled = await cli(['cancel', detail.execution.id, '--data', f.dir, '--human', '--reason', 'operator stop']);
+  expect(cancelled.code, cancelled.stderr).toBe(0); expect(cancelled.stdout).toMatch(/does not prove execution stopped/);
+  expect(JSON.parse((await cli(['show', detail.execution.id, '--data', f.dir])).stdout).execution.status).toBe('cancelled');
+});
+
 test('maintenance pause survives restart and requires explicit resume', async () => {
   const f = await fixture(); const child = await start(f);
   const paused = await cli(['pause', '--socket', f.socket, '--target', 'all', '--source', 'operator', '--reason', 'backup window']);
@@ -456,7 +480,7 @@ test.each([
   { args: ['artifact', 'execution', '--offset=-1'], error: 'Invalid --offset' },
   { args: ['artifact', 'execution', '--offset', '1.5'], error: 'Invalid --offset' },
   { args: ['artifact', 'execution', '--offset', ''], error: 'Invalid --offset' },
-  { args: ['artifact', 'execution'], error: 'Missing --socket' },
+  { args: ['artifact', 'execution'], error: 'Missing --name' },
   { args: ['artifact', 'execution', '--socket', '/unused'], error: 'Missing --name' },
   { args: ['submit'], error: 'Missing --socket' },
   { args: ['submit', '--socket', '/unused'], error: 'Missing --repo' },

@@ -57,6 +57,8 @@ CC-Switch 代理只作为 client-facing endpoint。协议转换、动态路由�
 
 `pnpm test tests/connection.test.ts tests/roles.test.ts tests/agent.test.ts tests/management.test.ts` 使用临时 Git repo、真实 CLI/socket、真实 Sandcastle builder/parser、受控 Docker CLI 替身、受控 harness 与本地 HTTP endpoint。它验证每次尝试读取、运行中不重读、模型省略/显式值、字段/冲突/失败、managed settings 拒绝、工具入参保护、只读设施命令及秘密不落 data/log/report/session。fixture 在宿主执行本地 HTTP 调用，不声称证明容器网络可达。
 
-本次未读取私人连接、运行真实 Docker、调用真实模型或产生费用。真实 provider、实际 Docker 网络与镜像兼容仍未验收，需单独授权。历史 #19/#23 特定环境成功记录不替代本增量验收。
+2026-10-16 在另行授权后，以真实 Docker 和原版 Claude Code 2.1.296 完成合成凭据、受控 Messages endpoint 的三次执行，覆盖 live 切换、模型继承/显式 override、容器来源、报告/session 秘密过滤及退出核对。独立命令和证据见 [#80 Docker 验收记录](issue-80-docker-acceptance.md)。`ORCH_REAL_CONNECTION=1 pnpm test tests/real-connection.test.ts` 仅在授权本机 Linux Docker 环境显式运行，默认跳过；需要记录中固定的预部署镜像，不下载或改用其他镜像。测试创建专用 internal network，不使用私人连接或真实模型；如默认地址池耗尽，可由操作者用 `ORCH_CONNECTION_SUBNET` 指定已核对无冲突的小子网。
+
+真实 provider、私人连接、代理路由、localhost 桥及其他镜像/CLI 版本仍未据此验收。历史 #19/#23 特定环境成功记录不替代本增量验收。
 
 依据为 Claude Code 官方 [env vars](https://code.claude.com/docs/en/env-vars)、[model config](https://code.claude.com/docs/en/model-config)、[gateway protocol](https://code.claude.com/docs/en/llm-gateway-protocol)、[settings reference](https://code.claude.com/docs/en/settings-reference)，以及 [#60 Resolution](https://github.com/canxer314/sandcastle-orchestrator/issues/60#issuecomment-6173989789) 和 [#63 Resolution](https://github.com/canxer314/sandcastle-orchestrator/issues/63#issuecomment-6173205958)。

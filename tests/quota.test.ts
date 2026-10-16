@@ -215,6 +215,7 @@ test('restart retains unknown quota; cancellation does not release it and manual
   const f = await fixture(1);
   const first = await f.submit('alpha', 'first');
   const waiting = await f.submit('beta', 'waiting');
+  await expect.poll(async () => (await f.show(first)).attempts[0]?.stopDirectory).toEqual(expect.any(String));
   await call(f.socket, { command: 'cancel', id: first, reason: 'stop requested' });
   expect((await f.show(waiting)).execution.status).toBe('queued');
   await stop(f.child);

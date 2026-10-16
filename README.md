@@ -75,7 +75,7 @@ pnpm start resume --socket "$RESTORED_DATA/control.sock" --source operator --rea
 
 ## 提交与查询
 
-CLI 只通过 Unix socket 操作控制服务，服务不可用就失败，不直接打开数据库。所有命令输出 JSON，错误写入 stderr 并返回非零退出码。
+管理命令默认输出原 JSON，不按 TTY 切换。查询和管理写命令都可显式 `--human` 查看可读回执，与 `--json` 互斥。在线查询及使用新模式/选项的写命令未指定 socket 时取所选 `--data` 内的 `control.sock`，默认 data 为 `~/.sandcastle-orchestrator/data`，不加载配置猜路径。旧写调用仍要求 `--socket`。显式 `--offline` 仅用于 show/list/logs，真正只读现有记录且不启动服务。详见[提交与可靠回执](docs/submissions.md)及[查询与离线查证](docs/queries.md)。
 
 ```sh
 pnpm start submit --socket /srv/orchestrator-data/control.sock \
@@ -85,11 +85,13 @@ pnpm start list --socket /srv/orchestrator-data/control.sock --repo example --st
 pnpm start show REQUEST_OR_EXECUTION_ID --socket /srv/orchestrator-data/control.sock
 ```
 
-`--input` 是 JSON，自由文本用 JSON 字符串提交。`--source` 是来源标识，如 `manual` 或外部定时脚本名称，不能放凭据。
+`--input` 是 JSON，自由文本用 JSON 字符串提交。也可用 `--input-file PATH` 读取文件，或 `--input-file -` 读取 stdin，不能与 `--input` 同用；只解析 JSON，不执行内容。repo 是配置中的 ID，不是 checkout 路径；capability 也可选择 role ID，两者与 source 都必须明确提供。`--source` 是来源标识，如 `manual` 或外部定时脚本名称，不是认证身份，不能放凭据。
+
+`submit --human` 仍是异步接纳，不代表执行成功。未给 key 时在发送前生成并向 stderr 输出 source、key 和同实例的只读核对命令；显式 key 原样使用，JSON 不自动补 key。human 写调用最多等待 30 秒，成功回执退出 0，拒绝/普通错误退出 1，已发出但回执未确认退出 2。Ctrl+C 只停止客户端等待，已发出的不确定写仍为 2，不自动 cancel、重发或启动 serve。cancel 回执不是停止证明。
 
 直接调用 socket 时，提交必须包含 `input` 字段。缺少该字段是协议错误，服务返回 HTTP 400 和 `Missing input`，不建立请求或执行。`repo`、`capability`、`source` 必须是非空字符串，否则返回 HTTP 400 和 `Invalid repo`、`Invalid capability` 或 `Invalid source`，不建立记录。格式正确但未登记的 repo 或能力仍按普通提交规则保存拒绝原因。显式 JSON `null` 不是缺失字段，会交给能力校验器，并按普通提交规则保存结果。未知命令返回 HTTP 400 和 `Unknown command`，不会按 `show` 查询记录。
 
-合法提交在同一个 SQLite 事务中保存请求和执行，返回 `accepted: true`、`requestId`、`executionId`。无效 repo、能力或输入在数据库可写时保存拒绝记录，返回 `accepted: false`、`requestId`、`reason`，不建立执行。校验器抛错即拒绝，即使错误消息为空，也不会建立执行。拒绝也是已记录的提交响应，退出码为 0，脚本必须检查 `accepted`。必要保存失败返回非零退出码，不返回接纳或拒绝回执。
+合法提交在同一个 SQLite 事务中保存请求和执行，返回 `accepted: true`、`requestId`、`executionId`。无效 repo、能力或输入在数据库可写时保存拒绝记录，返回 `accepted: false`、`requestId`、`reason`，不建立执行。校验器抛错即拒绝，即使错误消息为空，也不会建立执行。拒绝也是已记录的提交响应，JSON 退出码为 0，脚本必须检查 `accepted`；human 拒绝退出 1。必要保存失败返回非零退出码，不返回接纳或拒绝回执。
 
 `show` 可使用请求或执行标识，包含原始输入、来源、计划时间 `scheduledAt`、去重键 `deduplicationKey`、拒绝原因、执行状态和尝试列表。`list` 只列执行，按提交顺序返回，可按 repo、状态和 `--source` 筛选。没有执行配置的旧能力或未绑定角色保持排队。启动时按当前配置扫描历史 `queued` 主 Agent 请求，已绑定角色参与调度；历史确定性请求保持排队，旧的未知尝试不自动重跑。原请求/执行表保留，旧提交、查询协议和回执字段保持兼容。
 
@@ -165,7 +167,7 @@ const providers = [{
 
 投影只支持容器可达的 Anthropic Messages-compatible client endpoint 和静态 API key 或 Bearer token，不限定模型厂商。没有自动 localhost 桥，不改宿主执行、不新增认证方式。普通角色可显式配置 `docker.network: 'bridge'` 出网；历史 PR 分析示例的 endpoint-only 网络要求限于其当时受控部署，不是通用接入新门槛。host 网络禁令、确定性测试禁网、路径/权限及 unknown 人工核对边界不变。
 
-受控测试验证 live 切换、模型参数、冲突/不支持依赖失败、日志/报告/session 秘密过滤。未读取私人连接、运行真实 Docker 或调用真实 provider；这些均仍未验收，需要另行授权。
+受控测试验证 live 切换、模型参数、冲突/不支持依赖失败、日志/报告/session 秘密过滤。2026-10-16 已获准用真实 Docker、原版 Claude Code 2.1.296 和合成凭据完成受控 Messages endpoint 验收，见 [#80 Docker 验收记录](docs/issue-80-docker-acceptance.md)。未读取私人连接或调用真实模型；真实 provider、代理和 localhost 桥仍未据此验收。
 
 ### 协作停止与显式期限（#20）
 
