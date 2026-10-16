@@ -21,7 +21,11 @@ realSetup('generated setup commands produce a fixed-SHA readonly report in Docke
   const secrets: string[] = [];
   const redact = (text: string) => secrets.reduce((output, secret) => output.replaceAll(secret, '[REDACTED]'), text);
   const run = async (binary: string, args: string[], cwd = directory, timeout = 30000) => {
-    try {return (await exec(binary, args, {cwd, env, timeout, maxBuffer: 8 * 1024 * 1024})).stdout.trim();}
+    try {
+      const output = (await exec(binary, args, {cwd, env, timeout, maxBuffer: 8 * 1024 * 1024})).stdout.trim();
+      if (secrets.some(secret => output.includes(secret))) throw Error('Credential found in command output');
+      return output;
+    }
     catch {throw Error('Acceptance command failed; inspect retained resources without publishing credentials');}
   };
   const docker = (...args: string[]) => run('docker', args);
@@ -116,6 +120,7 @@ realSetup('generated setup commands produce a fixed-SHA readonly report in Docke
       return detail.attempts.at(-1)?.stopConfirmation?.kind;
     }, {timeout: 90000, interval: 500}).toBe('agent-exit-marker');
     const attempt = detail.attempts[0];
+    expect(secrets.some(secret => JSON.stringify(attempt).includes(secret)), 'Credentials absent from attempt before diagnostic assertions').toBe(false);
     expect(attempt).toMatchObject({actualSha: sha, workspaceMode: 'readonly', exitCode: 0, contract: 'valid', tools: []});
     expect(attempt.business.report).toContain(report);
     expect(attempt.business.report).toContain('[REDACTED]');

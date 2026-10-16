@@ -64,7 +64,7 @@ docker run --rm --pull=never --network none --entrypoint claude \
 
 可用 `setup --image YOUR_IMAGE`。基础标签及 apt 包并非按 digest 锁定；要严格复现应记录实际镜像 ID。setup 不检查 daemon/镜像，不自动安装或拉取，输出会给准备指引；runner 用 `--pull=never`，镜像不存在则执行失败并保留证据。
 
-本票已在另行授权后，用显式自定义镜像和本地受控 endpoint 验证真实容器中的生成入口及只读报告，见[仓库容器验收记录](https://github.com/canxer314/sandcastle-orchestrator/blob/master/docs/issue-82-container-acceptance.md)。推荐 Dockerfile 构建因公共 registry DNS 故障未完成，不能把自定义镜像或 #80 历史镜像 ID 当作此 Dockerfile 的产物证据。真实连接/模型仍未验收，不能据 setup 成功认定认证或答案质量可用。
+本票已在另行授权后，完成推荐 Dockerfile 构建、CLI版本检查，以及自定义/推荐镜像通过本地受控 endpoint 的真实容器问答入口验收，见[仓库容器验收记录](https://github.com/canxer314/sandcastle-orchestrator/blob/master/docs/issue-82-container-acceptance.md)。当前机器首次构建须临时提供受保护且容器可达的 npm 代理，不能把 daemon 的 localhost 代理当作 RUN 步骤代理；不得为此开放 FlClash 到全网或关闭 TLS。原样生成命令随后使用同配方缓存层完成验收。真实连接/模型仍未验收，不能据 setup 成功认定私人认证或模型答案质量可用。
 
 ## 主动执行和读取报告
 
@@ -85,5 +85,5 @@ sandcastle-orchestrator logs EXECUTION_ID --data /actual/project/data --human
 
 - `tests/setup.test.ts` 通过 CLI 子进程、临时 Git 仓库、伪终端与既有 socket 验证 Git 固定版本、交互/非交互、来源明确选择、路径冲突、参考文件、秘密不复制；用受控 Docker adapter 驱动既有 role/provider 并读取本地报告。
 - `tests/package.test.ts` 从源码之外安装 tgz，运行正式 setup，加载生成的外部 ESM 配置并通过文件提交。暂停 execution starts，只验证消费组合，不读取真实连接或启动 Docker。
-- `tests/real-setup.test.ts` 默认 skip。`ORCH_REAL_SETUP=1` 才授权真实 Docker/镜像准备；显式 `ORCH_SETUP_IMAGE` 对应自定义已有镜像，不构建推荐镜像。此次自定义镜像的真实容器/本地受控 endpoint 验收通过，推荐镜像构建仍受 DNS 阻塞。
+- `tests/real-setup.test.ts` 默认 skip。`ORCH_REAL_SETUP=1` 才授权真实 Docker/镜像准备；显式 `ORCH_SETUP_IMAGE` 对应自定义已有镜像，不构建推荐镜像。此次自定义镜像及推荐镜像的真实容器/本地受控 endpoint 验收均通过；首次推荐构建使用本次受限 npm 代理，未改生产连接设施。
 - 未读取私人连接、调用真实模型、产生模型费用或发布包。受控报告不是模型答案质量或真实 provider 验收。#80 历史 Docker 对受控 endpoint 的证据保持独立。
