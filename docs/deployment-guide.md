@@ -306,4 +306,4 @@ pnpm start retry "$EXECUTION_ID" --socket "$DATA/control.sock" \
 
 `retry` 会建立新 attempt，不复用旧日志或目录；若需求或基线变了，提交新请求而非 retry。清理只通过管理入口，且须满足保留条件；不要用 `docker rm -f`、`docker prune` 或批量删除替代核查。
 
-进一步的提交字段、状态含义、备份恢复、日志/产物限制见 [README](../README.md)；CLI 所有输出是 JSON，错误写 stderr 并以非零退出。妥善保护输入、配置、报告和日志，其中可能包含敏感数据。
+进一步的提交字段、状态含义、备份恢复、日志/产物限制见 [README](../README.md)；旧管理命令默认输出 JSON，显式 `--human` 提供可读结果；init/doctor/demo/setup 默认可读，支持 `--json`。退出码和不确定回执见[提交指南](submissions.md)，不能仅看退出码判断受理或业务成功。妥善保护输入、配置、报告和日志，其中可能包含敏感数据。

@@ -1,4 +1,16 @@
-# 使用指南：Issue 到 Draft PR
+# 使用指南
+
+当前仅提供本地候选 tgz，尚未发布 npm/Release。首次使用按以下顺序阅读；候选包验证不等于正式渠道验收。
+
+1. [安装与包外配置](installation.md)，然后 [init 与 doctor](onboarding.md)、[demo 与 reset](demo.md)，首次本地测试不需要模型账号。
+2. 演示完成后，自行进入 [真实项目与只读 Agent 接入](setup.md)。setup 只生成资源，真实连接与任务需另获授权。
+3. 日常服务保持显式启动；使用 [提交与回执核对](submissions.md)、[在线与离线查询](queries.md)，遇到 unknown 先查证，不自动重发。
+4. [新增只读角色与任务组合](readonly-role-tutorial.md) 是独立扩展教程。
+5. [换版、卸载与资源保留](installation.md#资源保留与手工换版)及[部署维护](deployment-guide.md)由管理员处理。
+
+下文保留已配置 implementation 能力的高级用法，不是首次测试的前置步骤。
+
+## 高级用法：Issue 到 Draft PR
 
 把一个 GitHub Issue 交给已配置的 Sandcastle implementation 能力，它会在隔离分支中尝试实现、运行测试并创建 Draft PR。你得到的是待审查的 Draft PR，不是自动合并的改动。
 

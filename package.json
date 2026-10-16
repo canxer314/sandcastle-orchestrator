@@ -5,7 +5,7 @@
   "repository": "github:canxer314/sandcastle-orchestrator",
   "publishConfig": { "access": "public" },
   "bin": { "sandcastle-orchestrator": "./dist/cli.js" },
-  "files": ["dist", "docs/installation.md", "docs/onboarding.md", "docs/demo.md", "docs/setup.md", "docs/connection-projection.md", "docs/issue-80-docker-acceptance.md"],
+  "files": ["dist", "docs/installation.md", "docs/onboarding.md", "docs/demo.md", "docs/setup.md", "docs/connection-projection.md", "docs/issue-80-docker-acceptance.md", "docs/user-guide.md", "docs/deployment-guide.md", "docs/queries.md", "docs/submissions.md", "docs/readonly-role-tutorial.md", "examples/readonly-role", "docs/external-submission.md", "docs/issue-27-local-acceptance.md", "docs/issue-19-real-acceptance.md", "docs/issue-20-real-acceptance.md", "docs/issue-23-real-acceptance.md", "docs/issue-24-real-acceptance.md", "docs/issue-22-real-acceptance.md", "docs/issue-29-real-acceptance.md"],
   "types": "./dist/index.d.ts",
   "exports": {
     ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" }

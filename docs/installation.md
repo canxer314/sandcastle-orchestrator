@@ -40,7 +40,7 @@ sandcastle-orchestrator doctor
 
 init 创建 `~/.sandcastle-orchestrator/` 下独立的 ESM 配置、data/init.json 标记和已提交演示仓库，写入前显示路径并询问。非交互或 JSON 模式使用 `init --yes`；该选项不跳过安全检查。完整资源重复复用，不覆盖已有或不完整目录。doctor 检查依赖、Docker daemon、配置和镜像，缺条件给修复步骤，不自动安装、拉取或执行容器。真实 Docker/模型尚未据本增量验收。
 
-自定义路径、冲突保护、JSON 输出和未初始化诊断详见[演示初始化与环境检查](https://github.com/canxer314/sandcastle-orchestrator/blob/master/docs/onboarding.md)。尚无 `demo` 自动执行入口，不把 doctor 成功当作测试通过。已有高级配置仍可使用下节的显式 serve 流程。
+自定义路径、冲突保护、JSON 输出和未初始化诊断详见[演示初始化与环境检查](https://github.com/canxer314/sandcastle-orchestrator/blob/master/docs/onboarding.md)。doctor 成功后可显式运行 `sandcastle-orchestrator demo`，详见 [demo 指南](demo.md)。不把 doctor 成功当作测试通过。已有高级配置仍可使用下节的显式 serve 流程。
 
 ## 最小外部可信配置
 
