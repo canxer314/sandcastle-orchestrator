@@ -1,10 +1,10 @@
 # 正式发布操作
 
-本流程对应 [#86](https://github.com/canxer314/sandcastle-orchestrator/issues/86)。当前停在发布准备，实际状态见[本次核对记录](issue-86-release-preparation.md)。以下远端写入命令只有在本次发布明确获准、账号与权限核实后才能执行。仓库提交、issue 标签和 registry 404 都不是发布授权。
+本流程对应 [#86](https://github.com/canxer314/sandcastle-orchestrator/issues/86)。0.1.0 已完成发布和渠道验证，结果见[发布验收](issue-86-release-acceptance.md)；准备与失败历史见[核对记录](issue-86-release-preparation.md)。下文保留本次流程供维护者核对，不可重新发布已存在的 0.1.0。以下远端写入命令仅供后续版本在另获授权、账号与权限核实后参考。仓库提交、issue 标签和 registry 404 都不是发布授权。
 
 ## 固定候选与版本
 
-本次准备发布 `@canxer314/sandcastle-orchestrator@0.1.0`，命令为 `sandcastle-orchestrator`，不接管依赖的 `sandcastle`。唯一候选是 #85 指南补验归档的 `canxer314-sandcastle-orchestrator-0.1.0.tgz`：
+本次发布的是 `@canxer314/sandcastle-orchestrator@0.1.0`，命令为 `sandcastle-orchestrator`，不接管依赖的 `sandcastle`。唯一候选是 #85 指南补验归档的 `canxer314-sandcastle-orchestrator-0.1.0.tgz`：
 
 ```sh
 ARTIFACT=/home/canxer/.local/state/sandcastle-orchestrator-acceptance/issue-85-guide-0aebada/canxer314-sandcastle-orchestrator-0.1.0.tgz
@@ -13,7 +13,7 @@ printf '%s  %s\n' 057d4c715d7ed3a71af698f7b69935044159cf193760d76ca4cbc399e84405
 
 异机先复制原件，再设置其实际绝对路径并核对相同哈希。不要用重新打包的产物替换它。#85 的[受控验收](issue-85-candidate-acceptance.md)、[真实验收](issue-85-real-acceptance.md)与[指南补验](issue-85-guide-acceptance.md)共同构成验收依据；unknown 不算已确认停止，受控模型/容器不算真实渠道验收。
 
-这是首个稳定版的拟议版本，当前 package.json 已为 `0.1.0`。逐项核对 `.changeset/` 的既有功能记录；本轮仅增加不入包的发布文档，没有新增公共行为，不新增版本 bump。仓库没有 Changesets CLI/config，不临时运行未配置的批量升版。发布前若版本被占用、需要改版本或包内文件，必须先作出版本决定、重建候选并补齐受影响的验收与哈希，不能把新包冒充本候选。预发布版本只能使用独立 tag，不能进入 `latest`。
+这是首个稳定版本，当前 package.json 已为 `0.1.0`。逐项核对 `.changeset/` 的既有功能记录；发布准备阶段仅增加不入包的发布文档，没有新增公共行为，不新增版本 bump。发布后线上指南更新另有 `issue-86-published-guides.md` changeset，供未来包版本使用，不改变已发布的 0.1.0。仓库没有 Changesets CLI/config，不临时运行未配置的批量升版。发布前若版本被占用、需要改版本或包内文件，必须先作出版本决定、重建候选并补齐受影响的验收与哈希，不能把新包冒充本候选。预发布版本只能使用独立 tag，不能进入 `latest`。
 
 ## 账号、授权与远端发布
 
@@ -28,7 +28,7 @@ gh release list --repo canxer314/sandcastle-orchestrator
 
 首次发布前，包可能没有 ACL 条目；查不到包不证明 scope 可写。维护者须在 npm 账号/scope 与凭据权限中核实，未确认就停下。登录成功和 `--dry-run` 也不能独自证明远端发布权限。
 
-发布说明草案见[0.1.0 说明](release-0.1.0-draft.md)。核对候选来源后，本版本 tag 指向已验收代码的主线提交 `a01d0d1dd3b3c4704ebd7b5493ffa03759d301e7`。如果 tag 已存在，先核对其目标及附件，不覆盖或盲目重试。以下是获准后的维护者操作，不是本轮已执行记录：
+发布说明见[0.1.0 说明](release-0.1.0.md)。核对候选来源后，本版本 tag 指向已验收代码的主线提交 `a01d0d1dd3b3c4704ebd7b5493ffa03759d301e7`。如果 tag 已存在，先核对其目标及附件，不覆盖或盲目重试。以下保留当时获准后的发布命令。0.1.0 已存在，不可再次执行：
 
 ```sh
 set -eu
@@ -38,10 +38,10 @@ gh release create v0.1.0 "$ARTIFACT" \
   --repo canxer314/sandcastle-orchestrator \
   --target a01d0d1dd3b3c4704ebd7b5493ffa03759d301e7 \
   --title 'Sandcastle orchestrator 0.1.0' \
-  --notes-file docs/release-0.1.0-draft.md
+  --notes-file docs/release-0.1.0.md
 ```
 
-Release 草案正文明确标为待验证。正式渠道验证后，记录真实结果并更新 Release 正文，移除草案标记，再切换首页。两处上传都使用上面的原始 tgz；不使用自动生成的源码 zip/tar.gz，不维护第二套安装器。
+首次 Release 正文明示待验证，正式渠道验证后才记录真实结果、移除草案标记并切换首页。两处上传都使用上面的原始 tgz；不使用自动生成的源码 zip/tar.gz，不维护第二套安装器。
 
 任一发布命令失败、超时或回执不明，保存输出，先读回 npm 版本及 Release/tag/附件现状。npm 成功而 Release 失败属于部分发布，README 保持原入口；不能盲目重发、撤包、删 tag 或删 Release。任何删除需要另行授权。
 
@@ -73,7 +73,7 @@ demo 验证必须分别保存测试结果、执行停止、本次服务退出、
 
 ## 首页切换与交付
 
-正式 npm、Release 同一产物和上述快速开始全部通过后，才应用[首页草案](release-homepage-draft.md)，保留 README 后续维护、高级能力及用户已有修改。同步检查 installation、onboarding、demo、user-guide、deployment-guide 的当前状态描述；历史报告保留当时结论，增加指向最终发布记录的说明，不篡改历史。
+正式 npm、Release 同一产物和上述快速开始全部通过后，才更新 README 首页，保留 README 后续维护、高级能力及用户已有修改。同步检查 installation、onboarding、demo、user-guide、deployment-guide 的当前状态描述；历史报告保留当时结论，增加指向最终发布记录的说明，不篡改历史。
 
 已发布 tgz 内 README 是候选验收时的旧入口，不能为更新首页重新打包或覆盖同版本。Release 页面应指出这一点，并链接已核验的线上快速开始。后续文档入包按正常新版本重新验收。
 

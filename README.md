@@ -1,12 +1,28 @@
 # Sandcastle orchestrator
 
-独立的单机 TypeScript 应用。已实现从请求提交与查询、固定 commit 确定性执行、外部定时提交与重复送达处理开始的多项能力；当前能力和验收范围见下文。完整规格见 [#14](https://github.com/canxer314/sandcastle-orchestrator/issues/14)。普通使用者请从 [Issue 到 Draft PR 使用指南](docs/user-guide.md) 开始；首次安装和配置请看 [部署与运维指南](docs/deployment-guide.md)。新增只读 role 和组合现有任务请看[完整只读角色扩展与任务组合教程](docs/readonly-role-tutorial.md)。
+在单台 Linux 主机上执行固定 Git 提交的测试，保留结果和日志，再按需接入只读 Agent 或自定义角色。第一次演示只运行 Node 测试，不需要模型账号。
 
-## 安装与运行
+准备 Linux、Node.js 24+、npm、Git、util-linux 的 `flock`、Docker daemon 和可信镜像 `node:22.22-alpine`。macOS/Windows 请使用 Linux 或 WSL。安装与运行不需要 pnpm。
 
-正式包名为 `@canxer314/sandcastle-orchestrator`，命令为 `sandcastle-orchestrator`。目前已验证本地 tgz 安装，尚未发布 npm/Release。包外安装、可信配置、公开类型与运行时 import 见[安装说明](docs/installation.md)。安装消费者只需 Node/npm，不需要 pnpm、源码树或全局 tsx；产物安装可能联网下载生产依赖。`--help`、子命令 `--help` 和 `--version` 不需要配置或服务。`init` 创建独立演示资源，`doctor` 检查依赖和资源，见[演示初始化与环境检查](docs/onboarding.md)；`setup` 为真实项目生成独立只读问答入口，见 [setup 指南](docs/setup.md)；`demo` 运行一次固定提交的 Docker 演示测试，`init --reset-demo` 在明确确认后重建演示仓库并保留历史，见[demo/reset 指南](docs/demo.md)。doctor 检查通过不代表已运行测试。
+```sh
+PREFIX="$HOME/.local/sandcastle-orchestrator"
+npm install --global --prefix "$PREFIX" @canxer314/sandcastle-orchestrator
+export PATH="$PREFIX/bin:$PATH"
+sandcastle-orchestrator --version
+sandcastle-orchestrator init
+sandcastle-orchestrator doctor
+sandcastle-orchestrator demo
+```
 
-需要 Linux、Node.js 24+ 和 util-linux 提供的 `flock`；macOS/Windows 请使用 Linux 或 WSL，不承诺原生执行。开发源码仍使用 pnpm 12.3.4。执行能力还需要本机 Docker daemon、Git 和预先部署的可信测试镜像；不会自动拉取镜像。Sandcastle 固定为 `0.12.0`，Effect 固定为 `3.20.0`，升级需显式更新依赖和锁文件。以下开发入口保持可用：
+init 显示将创建的配置、data 和演示仓库，确认后写入。doctor 缺依赖时先按提示修复，再运行 demo；程序不会自动安装系统依赖或拉镜像。demo 测试演示仓库当前已提交 HEAD，分别报告测试结果、执行停止和本次服务退出，并保留控制服务及 attempt 日志。三项确认后才算首次测试通过。后续修改请自行 commit，未提交内容不会进入测试。
+
+依赖缺失看[初始化与修复说明](https://github.com/canxer314/sandcastle-orchestrator/blob/master/docs/onboarding.md)。路径冲突或 unknown 时保留现场，按[演示排障](https://github.com/canxer314/sandcastle-orchestrator/blob/master/docs/demo.md#证据与排障)核对本次输出中的实际编号与日志，不删锁、不覆盖配置、不盲目重跑。
+
+继续使用可阅读[真实项目接入](https://github.com/canxer314/sandcastle-orchestrator/blob/master/docs/setup.md)、[日常查询](https://github.com/canxer314/sandcastle-orchestrator/blob/master/docs/queries.md)、[独立角色与任务组合](https://github.com/canxer314/sandcastle-orchestrator/blob/master/docs/readonly-role-tutorial.md)、[完整用户指南](https://github.com/canxer314/sandcastle-orchestrator/blob/master/docs/user-guide.md)和[部署指南](https://github.com/canxer314/sandcastle-orchestrator/blob/master/docs/deployment-guide.md)。固定版可安装 `@canxer314/sandcastle-orchestrator@0.1.0`，备用附件按 [0.1.0 Release](https://github.com/canxer314/sandcastle-orchestrator/releases/tag/v0.1.0) 说明安装；换版前先阅读[维护与资源保留](https://github.com/canxer314/sandcastle-orchestrator/blob/master/docs/installation.md#资源保留与手工换版)。安装可能联网下载依赖，不会替你停止、升级或重启运行中的实例。
+
+## 开发与高级配置
+
+开发源码使用 pnpm 12.3.4。Sandcastle 固定为 `0.12.0`，Effect 固定为 `3.20.0`，升级需显式更新依赖和锁文件。以下开发入口保留：
 
 ```sh
 pnpm install --frozen-lockfile

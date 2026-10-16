@@ -2,7 +2,7 @@
 
 本轮基于 `origin/master` 的 `a01d0d1dd3b3c4704ebd7b5493ffa03759d301e7`，在独立 worktree `/home/canxer/repos/sandcastle-issue-86-master`、分支 `issue-86-release-from-master` 工作。原有 `sandcastle-issue-86` worktree 与当前用户工作区未修改。
 
-结论是发布准备可交付，#86 尚未完成。没有发布 npm、创建 tag/Release、推送代码、切换 README 或改变父票 #65。后续按[发布操作](release.md)执行，已准备[固定版本 Release 说明](release-0.1.0-draft.md)与[未启用的首页草案](release-homepage-draft.md)。
+本节保留授权前的准备阶段结论；最终发布结果见[正式验收](issue-86-release-acceptance.md)。当时结论是发布准备可交付，#86 尚未完成。没有发布 npm、创建 tag/Release、推送代码、切换 README 或改变父票 #65。后续按[发布操作](release.md)执行，已准备[固定版本 Release 说明](release-0.1.0.md)与首页草案，后者已在正式验收后应用到 README。
 
 ## 候选与依赖证据
 

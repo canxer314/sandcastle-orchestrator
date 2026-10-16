@@ -58,3 +58,5 @@ reset 会说明并询问是否丢弃演示仓库中的全部修改。确认后�
 重建先在同级临时目录准备新仓库，再交换目录。若文件系统在交换或清理时失败，保留现场并按报错检查同级 `.reset-*` 目录，不要删除 data 或执行证据。
 
 本阶段 CLI/socket 测试使用受控 Docker adapter 和故障时钟，不能据此宣称真实 Docker 已验收。真实 Docker、模型、外部服务和发布需在获授权环境另行验收。
+
+后续验收：0.1.0 的 npm 固定版、latest 与 Release 附件均已在独立环境完成真实 Docker 快速开始，分别核对测试结果、执行停止、服务退出和日志，见[发布验收](https://github.com/canxer314/sandcastle-orchestrator/blob/master/docs/issue-86-release-acceptance.md)。上述“本阶段”描述是原增量的历史范围。
