@@ -64,7 +64,7 @@ test "$(sqlite3 "$RESTORED_DATA/records.sqlite" 'PRAGMA integrity_check;')" = ok
 pnpm start serve --data "$RESTORED_DATA" --config "$RESTORED_CONFIG/config.ts" --maintenance restore
 # 在另一个终端检查 list/show/logs/artifact、配置版本和独立外部审计。
 pnpm start restore-review --socket "$RESTORED_DATA/control.sock" --source operator \
-  --reason 'post-backup audit compared' --backup-point '2026-10-11T00:00:00Z' \
+  --reason 'post-backup audit compared' --backup-point "$(cat "$BACKUP/backup-point.txt")" \
   --handling 'stale queue cancelled; unknown executions reconciled' --external-results 'host and remote audit checked; describe actual results'
 pnpm start resume --socket "$RESTORED_DATA/control.sock" --source operator --reason 'review accepted'
 ```
