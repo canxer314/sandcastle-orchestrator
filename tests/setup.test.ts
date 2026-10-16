@@ -204,3 +204,19 @@ test('reference-only generates merge files without creating or modifying deploym
   expect(next.code, next.stderr).toBe(0);
   await expect(readdir(nextData)).rejects.toMatchObject({code: 'ENOENT'});
 });
+
+test('setup preserves custom demo checkouts and initialized data subdirectories', async () => {
+  const p = await project();
+  const demo = join(p.dir, 'custom-demo'); const data = join(p.dir, 'custom-data');
+  await mkdir(demo); await mkdir(data);
+  execFileSync('git', ['init', '-q', demo]);
+  const marker = JSON.stringify({layoutVersion: 1, config: join(p.dir, 'custom-config/config.ts'), data, demoRepo: demo, repoId: 'demo', capabilityId: 'demo-test'});
+  await writeFile(join(data, 'init.json'), marker);
+  for (const args of [['--config', join(demo, 'setup/config.mts')], ['--data', join(data, 'setup-data')], ['--input-path', join(data, 'setup-input.json')]]) {
+    const result = await cli(['setup', '--yes', '--json', '--connection-environment', ...args], p.repo, p.home);
+    expect(result.code, result.stderr).toBe(1);
+  }
+  expect(await readdir(data)).toEqual(['init.json']);
+  expect(await readFile(join(data, 'init.json'), 'utf8')).toBe(marker);
+  expect(await readdir(demo)).toEqual(['.git']);
+});

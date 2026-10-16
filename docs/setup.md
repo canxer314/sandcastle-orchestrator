@@ -35,7 +35,7 @@ sandcastle-orchestrator setup --project /srv/my-project --connection-environment
 
 默认布局为 `~/.sandcastle-orchestrator/projects/PROJECT/`，包含 `config/config.mts`、同目录 `Dockerfile`、独立 `data/` 和 `input.json`。repo ID 来自项目名，role 为 `PROJECT-question`。`.mts` 配置明确使用 ESM，不创建或改写现有 package.json。
 
-名称或文件冲突时换 `--name`，或显式指定全新的 `--config`、`--data`、`--input-path`。已有文件、符号链接、data 目录均不覆盖，reference-only 允许选现有 data 但不写入，`--yes` 不绕过物理路径和包含关系保护。资源不得位于安装目录、目标项目、Git metadata 或默认 demo 目录内，也不能反过来包含它们。不自动删除失败留下的文件。
+名称或文件冲突时换 `--name`，或显式指定全新的 `--config`、`--data`、`--input-path`。已有文件、符号链接、data 目录均不覆盖，reference-only 允许选现有 data 但不写入，`--yes` 不绕过物理路径和包含关系保护。资源不得位于安装目录、目标项目、Git metadata 或默认 demo 目录内，也不能反过来包含它们。物理路径祖先存在 `.git` 或 `init.json` 时也拒绝，保护自定义 demo 仓库/data；不加载其中的配置或标记。不自动删除失败留下的文件。
 
 已有自定义部署可用 `--reference-only --config /srv/new-reference/config.mts --data /actual/existing-data`，只生成新参考配置、输入和镜像配方供手工合并，不读取或重写已有配置，也不创建或修改 data。此时必须先把 repo/role/provider/environment/binding 合并进自己的可信配置，再调整输出中的 serve 配置路径；submit 仍须显式指定目标和 source。
 

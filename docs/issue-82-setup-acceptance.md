@@ -29,6 +29,8 @@
 
 集成定向 `pnpm test tests/setup.test.ts tests/package.test.ts` 为 22 passed；`pnpm run typecheck`、build、`git diff --check` 通过。全套 `ORCHESTRATOR_REAL_DOCKER=0 ORCH_REAL_MCP=0 ORCH_REAL_CONNECTION=0 pnpm test --maxWorkers=1 --testTimeout=20000 --expect.poll.timeout=10000` 为 **20 files passed / 1 skipped，375 passed / 21 skipped**，耗时 417.48 秒。原有九条验收中第5条的真实容器 endpoint/推荐镜像证据仍缺失，清单最多 8/9，任务须保持打开。
 
+集成 Spec 复核发现自定义 demo 仓库/data 子目录未受保护；CLI 新测试实际复现后，新增物理输出路径祖先 `.git`/`init.json` 边界检查，不加载标记或 TS，不覆盖原件。setup 10项、typecheck/build通过；同一完整门禁命令最终 **20 files passed / 1 skipped，376 passed / 21 skipped**，耗时414.27秒。Standards/Spec均静态复核该修复无剩余确定问题；原审查跨worktree差异访问限制保留。
+
 ## 未验收
 
 未读取私人连接、运行真实 Docker/原版容器 CLI、构建推荐镜像、拉取镜像、调用真实 provider/模型、产生模型费用或发布包。推荐 recipe 使用固定 Node/CLI 版本，但基础标签和 apt 包不按 digest 固定；需在授权环境构建并记录实际 image ID。

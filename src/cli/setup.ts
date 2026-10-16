@@ -51,6 +51,7 @@ export async function setup(values: Record<string, unknown>) {
     const overlaps = contains;
     const protectedPaths = [project.root, await git('rev-parse', '--path-format=absolute', '--git-common-dir'), resolve(import.meta.dirname, '../..'), join(homedir(), '.sandcastle-orchestrator', 'config'), join(homedir(), '.sandcastle-orchestrator', 'data'), join(homedir(), '.sandcastle-orchestrator', 'demo-repo')];
     for (const resource of Object.values(paths)) {
+      await checkExistingResourceBoundary(resource);
       for (const protectedPath of protectedPaths) {
         const physical = await physicalPath(protectedPath);
         if (overlaps(resource, physical) || overlaps(physical, resource)) throw Error('Setup resources must be separate from application, project, Git metadata and demo resources; choose another path');
@@ -90,6 +91,19 @@ export async function setup(values: Record<string, unknown>) {
     const result = {project, repo, role, connection, connectionSource: selection, model: model ?? 'inherit', image, paths, commands, referenceOnly: !!values['reference-only'], warnings, preparation: `Original Claude Code 2.1.296; inspect/build explicitly:\n${commands.prepareImage}\n${commands.checkImage}\nCustom --image is preserved; the recipe builds only the recommended tag. No image was inspected or pulled. See docs/setup.md.`, acceptance: {generated: true, realDocker: 'not verified by setup', realModel: 'not verified'}};
     console.log(values.json ? literal(result) : `Prepared ${repo} at ${project.sha}\nConnection: ${selection}; model: ${result.model}\n${literal(paths)}\n\n${result.preparation}\n\nRun explicitly${values['reference-only'] ? ' after manual merge (adjust config path)' : ''}:\n${commands.serve}\n${commands.submit}\nThen use show EXECUTION_ID --data ${quote(paths.data)} --human to read the local report.\nSetup is not Agent acceptance; check a nonempty, relevant report and the recorded limitations.`);
   } finally { readline?.close(); }
+}
+
+async function checkExistingResourceBoundary(path: string) {
+  let directory = dirname(path);
+  while (true) {
+    for (const name of ['.git', 'init.json']) {
+      try { await lstat(join(directory, name)); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue; throw error; }
+      throw Error('Setup resources must be separate from existing Git checkouts and initialized demo data; choose another path');
+    }
+    if (dirname(directory) === directory) break;
+    directory = dirname(directory);
+  }
 }
 
 function nonempty(value: unknown, label: string) {
