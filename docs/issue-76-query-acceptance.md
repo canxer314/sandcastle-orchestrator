@@ -21,8 +21,16 @@
 
 TDD 按 CLI/socket seam 逐段 red→green。`code-review` 双轴审查原发现 Standards 1 项非阻塞重复读取、Spec 1 项核对命令遗漏 selectors；均已修复并分别复核，当前两轴无剩余发现。
 
+## 合并前集成复核
+
+已将 master `97142aa` 合入本分支，集成提交 `d77aea2`。本轮 typecheck、build 和六个 CLI/socket 测试文件通过，相关测试 161 passed。全套首次为 296 passed / 1 failed / 21 skipped，失败是既有 quota 测试在 stop 目录落盘前就杀掉服务，重启后把尚未保存的 `stopDirectory` 传给 `rm`。
+
+定向延迟 stop 目录创建 400 ms 可稳定复现同一错误。测试现先经既有 socket show 等到该字段持久化，再执行原取消、重启和通知失败断言；没有更改生产逻辑。强制延迟下该测试通过，quota 全部 13 项通过，typecheck 通过；修复已双轴复核。最终全套结果及实际合并提交另记录在 PR #91 和 issue #76 的交付评论，不将首次失败隐去。
+
+另以编译后的 `dist/cli.js` 子进程、实际 SQLite 与临时日志补充离线组合查证，指定旧 attempt/call 1 返回正确证据，70004 字节 stdout 返回末尾 65536 字节且标记截断，complete:false 保留；默认最新 attempt 的 cleaned 记录返回空日志及清理事实。所有文件 hash、mode、size、mtime、ctime 及目录成员前后相同。首轮探针因 fixture INSERT 占位符数量错误退出，修正探针后通过，不是产品错误。该查证不是正式安装包验收或真实 Docker/模型验收。
+
 ## 未验收与边界
 
-未运行真实 Docker、真实模型、私人连接或生产外部写入，20 项 opt-in 测试跳过。受控适配器测试不代替真实 provider 验收。既有 package 消费测试随全套通过，但本增量正式打包消费集成验收仍留给集成阶段；未发布 npm/Release、推送或修改远程 issue。
+上述首次实施验收阶段未运行真实 Docker、真实模型、私人连接或生产外部写入，20 项 opt-in 测试跳过；同步 master 后新增一项真实连接 opt-in，集成全套共 21 项跳过。受控适配器测试不代替真实 provider 验收。既有 package 消费测试随全套通过，但本增量正式打包消费集成验收仍留给集成阶段；未发布 npm/Release。原阶段尚未推送或修改远程 issue，后续 PR 合并及任务状态以交付评论为准。
 
 离线仅支持已测试的现有查询表结构与 DELETE journal 模式，WAL/非空恢复 journal 明确拒绝，不做修复。数据库只读事务不冻结日志和产物，不宣称跨资源快照一致。离线不提供 artifact/maintenance，不建议为看结果而启动可能调度历史任务的服务。写命令 human、输入文件、demo/reset/setup 不属本增量。
