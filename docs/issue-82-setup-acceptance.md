@@ -33,6 +33,8 @@
 
 ## 未验收
 
+以下为 PR #94 交付时的历史边界。2026-10-16 另行获授权后，已补充真实 Docker、显式自定义镜像、生成命令与本地受控 endpoint 报告证据，见 [后续容器验收](issue-82-container-acceptance.md)。推荐 Dockerfile 的构建因公共 registry DNS 故障未完成，不能把自定义镜像成功替代该证据；真实模型/私人连接仍未验收。
+
 未读取私人连接、运行真实 Docker/原版容器 CLI、构建推荐镜像、拉取镜像、调用真实 provider/模型、产生模型费用或发布包。推荐 recipe 使用固定 Node/CLI 版本，但基础标签和 apt 包不按 digest 固定；需在授权环境构建并记录实际 image ID。
 
 #80 的历史真实 Docker 对受控 endpoint 证据见 [独立记录](issue-80-docker-acceptance.md)，不等于本票生成镜像或真实项目问答验收。setup 成功、completed、contract valid、受控报告均不能替代真实模型答案质量或测试通过。#82 的真实镜像/连接/模型验收仍未完成，不能据本次本地提交关闭完整验收。
