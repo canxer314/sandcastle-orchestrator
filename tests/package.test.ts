@@ -5,6 +5,8 @@ import { mkdtemp, mkdir, readFile, readdir, rm, stat, symlink, writeFile } from 
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterAll, beforeAll, expect, test } from 'vitest';
+import { Client } from '@modelcontextprotocol/client';
+import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
 
 const exec = promisify(execFile);
 const root = resolve(import.meta.dirname, '..');
@@ -257,12 +259,14 @@ test('readonly tutorial works as a package consumer through submit, show and rep
   const report = {summary:'The fixture has a README.', evidence:['README.md:1'], limitations:['Controlled adapter, not a model conclusion.']};
   const docker = join(project, 'docker');
   const calls = join(project, 'docker-calls');
+  const gate = join(project, 'tool-gate');
+  const release = join(project, 'tool-release');
   await writeFile(docker, `#!/bin/sh
 printf '%s\\n' "$*" >> ${JSON.stringify(calls)}
 case "$1" in
 run) case "$*" in *--detach*) echo controlled-container;; *) echo '["README.md"]';; esac;;
 exec) case "$*" in
-*ORCH_EXIT_*) marker=$(printf '%s' "$*" | grep -o 'ORCH_EXIT_[a-f0-9]*' | head -1); printf '%s\\n%s:0\\n' '${JSON.stringify(report)}' "$marker";;
+*ORCH_EXIT_*) if [ -f ${JSON.stringify(gate)} ]; then while [ ! -f ${JSON.stringify(release)} ]; do sleep 0.02; done; fi; marker=$(printf '%s' "$*" | grep -o 'ORCH_EXIT_[a-f0-9]*' | head -1); printf '%s\\n%s:0\\n' '${JSON.stringify(report)}' "$marker";;
 *rev-parse*) echo ${sha};;
 esac;;
 inspect) echo '{"Running":false,"Status":"exited","ExitCode":0}';;
@@ -325,5 +329,39 @@ esac
   await expect.poll(() => cli('show', listing.executionId), {timeout:15_000}).toMatchObject({
     execution:{status:'completed'}, attempts:[{actualSha:sha, contract:'valid', business:{actualSha:sha, entries:['README.md']}}],
   });
+  await writeFile(gate, 'wait for controlled tool call');
+  const composedReceipt = await submit({sha, question:'What is here?'});
+  expect(composedReceipt.accepted).toBe(true);
+  let detail: any;
+  await expect.poll(async () => {
+    detail = await cli('show', composedReceipt.executionId);
+    return detail.attempts[0]?.mcpDirectory;
+  }, {timeout:15_000}).toBeTruthy();
+  await expect.poll(() => readFile(calls, 'utf8'), {timeout:15_000}).toContain("--mcp-config '/orchestrator-mcp/config.json'");
+  const client = new Client({name:'tutorial-controlled-harness', version:'1'});
+  try {
+    await client.connect(new StdioClientTransport({command:process.execPath, args:[
+      join(detail.attempts[0].mcpDirectory, 'bridge.cjs'),
+      join(detail.attempts[0].mcpDirectory, 'tools.sock'),
+    ]}));
+    expect((await client.listTools()).tools.map(tool => tool.name)).toContain('list_root');
+    const result = await client.callTool({name:'list_root', arguments:{}}) as any;
+    expect(result.isError).not.toBe(true);
+    expect(JSON.parse(result.content[0].text)).toMatchObject({
+      runState:'completed', contract:'valid', actualSha:sha,
+      business:{actualSha:sha, entries:['README.md']},
+    });
+  } finally {
+    await client.close();
+    await writeFile(release, 'tool completed');
+  }
+  await expect.poll(() => cli('show', composedReceipt.executionId), {timeout:15_000}).toMatchObject({
+    execution:{status:'completed'}, attempts:[{actualSha:sha, contract:'valid', business:report, toolCalls:[{
+      id:'1', tool:'list_root', capability:'list-root', actualSha:sha, runState:'completed', contract:'valid',
+    }]}],
+  });
+  expect(await cli('logs', composedReceipt.executionId, '--call', '1')).toMatchObject({complete:true, stdout:'["README.md"]\n'});
+  const composedReport = await cli('artifact', composedReceipt.executionId, '--name', 'report.txt');
+  expect(JSON.parse(Buffer.from(composedReport.content, 'base64').toString())).toEqual(report);
   await stop(composedChild);
 }, 240_000);

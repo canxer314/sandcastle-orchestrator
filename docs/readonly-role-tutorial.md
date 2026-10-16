@@ -188,12 +188,12 @@ role 通过工具调用时，输入是 `{}`，设施把当前 repo、attempt 和
 
 ```sh
 pnpm run typecheck
-pnpm exec vitest run tests/package.test.ts tests/roles.test.ts tests/management.test.ts tests/mcp.test.ts
-pnpm test
+pnpm exec vitest run tests/package.test.ts tests/roles.test.ts tests/management.test.ts tests/mcp.test.ts --maxWorkers=1
+pnpm test --maxWorkers=1
 ```
 
-`tests/package.test.ts` 直接复制本教程两个文件到源码之外的 ESM 项目，安装同一 tgz 及显式依赖，使用该项目自己的 TypeScript 检查。正式已安装 CLI 经真实 socket 完成非法输入拒绝、固定 SHA role 受理/查询、报告 artifact 和日志读取；另加载组合配置并独立提交 `list-root`。仅 provider 与 Docker binary 替换成受控 adapter，不快照私有实现。断言只读启动参数和原 checkout 不变，不冒充内核写保护证据。
+`tests/package.test.ts` 直接复制本教程两个文件到源码之外的 ESM 项目，安装同一 tgz 及显式依赖，使用该项目自己的 TypeScript 检查。正式已安装 CLI 经真实 socket 完成非法输入拒绝、固定 SHA role 受理/查询、报告 artifact 和日志读取；另加载组合配置并独立提交 `list-root`，再提交组合 role，由受控 harness 客户端经真实 MCP stdio 调用 `list_root`，用 CLI 核对 `toolCalls`、固定 SHA、调用日志与最终报告。provider 与 Docker binary 使用受控 adapter，不快照私有实现。断言只读启动参数和原 checkout 不变，不冒充内核写保护证据。仓库的开发期类型映射指向公开 `src/index.ts`，无需先生成 dist；外部消费检查没有此映射，仍解析 tgz 声明和运行时导出。
 
-本次 `pnpm run typecheck` 通过；`pnpm test --maxWorkers=1` 全套 14 文件、274 项通过、20 项真实环境 opt-in 跳过，其中包消费 8 项、role 26 项、management 86 项、MCP 12 项。教程的 10 个 shell 代码块通过 `sh -n` 语法检查，没有据此执行 Docker 或模型。首次并发定向和全套曾出现既有 ready/restore/MCP 等待超时，串行全套原断言通过，未修改生产代码或放宽超时。
+本次 `pnpm run typecheck` 通过；`pnpm test --maxWorkers=1` 全套 14 文件、274 项通过、20 项真实环境 opt-in 跳过，包含 CLI/socket、role、MCP 与 8 项包消费测试。教程的 10 个 shell 代码块通过 `sh -n` 语法检查，没有据此执行 Docker 或模型。首次并发定向和全套曾出现既有 ready/restore/MCP 等待超时，串行全套原断言通过，未修改生产代码或放宽超时。
 
 未运行真实 Docker、真实模型、私人连接、远端调用或发布，未验收所选镜像、认证、网络可达、模型答案和 role 实际调用 `list_root`。这些须在另获授权的环境通过相同用户入口验收并记录镜像/CLI 版本、固定 SHA、答案核对和独立停止证据。受控 adapter 通过不补齐父规格 #65 的真实 Agent 接入，也不替代历史特定环境的验收。
