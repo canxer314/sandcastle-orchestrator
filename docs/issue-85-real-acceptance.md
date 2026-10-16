@@ -1,6 +1,6 @@
 # #85 授权后的真实候选验收
 
-2026-10-17，用户在受控验收交付后明确回复“给你授权，继续吧”。本轮在当前 Linux 主机执行真实 Docker 和既有连接的只读模型问答，不发布包、不改业务仓库、不改变 CC-Switch 全局 provider，也不修改远端 issue 状态。
+2026-10-17，用户在受控验收交付后明确回复“给你授权，继续吧”。本轮在当前 Linux 主机执行真实 Docker 和既有连接的只读模型问答，不发布包、不改业务仓库、不改变用户正在使用的 CC-Switch 全局 provider，也不修改远端 issue 状态。
 
 ## 本次结论
 
@@ -8,7 +8,7 @@
 
 真实 Agent 路径完成 DeepSeek 直连、CC-Switch 转接 ChatGPT、运行中切换临时连接来源及下一次执行、默认继承和显式 model override。自动 localhost 桥经真实容器 harness 使用，原代理仍只监听 localhost，没有人工 relay 或修改 listener。报告回答与固定提交匹配。
 
-这仍是指定主机、镜像和连接的候选验收。未对正在使用的 CC-Switch 全局 provider 做热切换/failover；该路由变化的行为未实测，不宣称客户端能固定代理的上游模型。发布渠道和正式首页切换属于 #86。本轮不宣布 #85 所有验收项无条件完成。
+这仍是指定主机、镜像和连接的候选验收。后续在隔离 CC-Switch 实例中完成同一执行内 provider 热切换，以及受控 503 后转入真实 DeepSeek 的 failover；用户正在使用的代理配置保持不变。实测确认客户端参数不能固定代理的上游模型。发布渠道和正式首页切换属于 #86。本轮不宣布 #85 所有验收项无条件完成。
 
 ## 产物、环境与证据
 
@@ -81,10 +81,27 @@ CC-Switch 第一条代理执行的 harness session 为 `75698acb-4025-4b73-9598-
 
 本次使用的产品字节与受控验收相同：类型检查通过、低并行全套 401 passed / 22 skipped、最终包消费 17 passed。真实执行补充了上文实际路径，不把默认跳过的全部 opt-in 测试都改称通过。本次只改验收文档，没有重复运行未变的全套。
 
-尚未执行 CC-Switch 全局 provider 在一个执行内的热切换/failover、跨真实历史发布版本、所有可用后端/镜像组合。未知停止仍不能算安全停止。已归档足够证据供分项判断，但不关闭 #85 或父票，不发布 npm/Release，不切换 README 正式入口。
+尚未覆盖真实供应商故障、跨真实历史发布版本、所有可用后端/镜像组合。未知停止仍不能算安全停止。已归档足够证据供分项判断，但不关闭 #85 或父票，不发布 npm/Release，不切换 README 正式入口。
 
 归档 SHA-256：
 
 - `environment.json`：`0d7bf0ab7a77d30098a2e5ce02ba5d89b92af24c3ddaaeeaedef9f59f2c421e4`。
 - `evidence.tar.gz`：`2c23a4f1cb55331289741e1885ac9f366ba61d167ebc0375e90dc4988d99b20c`。
 - `canxer314-sandcastle-orchestrator-0.1.0.tgz`：`e762f394887bf61c24bfbe9702e7fc8aa379961aa76ab80b5a7db7e967c9054a`。
+
+
+## 补验：同一执行内代理热切换和 failover
+
+用户要求继续后，以 `ab4398e` 为文档基线，继续使用上述同一候选 tgz 和 Claude 镜像。测试目标为 CC-Switch CLI `5.10.4` 的独立实例，工作目录 `/tmp/issue-85-routing-z1qyty2z`。同时隔离 `HOME`、`CLAUDE_CONFIG_DIR`、`CC_SWITCH_CONFIG_DIR`、`XDG_RUNTIME_DIR` 和 `XDG_STATE_HOME`，使配置数据库、daemon socket、状态及监听端口均不与用户实例混用。独立代理监听 `127.0.0.1:60071`；provider `via-main-proxy` 转接用户既有 localhost 代理，provider `deepseek` 使用授权的真实直连。容器到该独立代理仍由编排器自动 localhost bridge 连通。
+
+公开 CLI 顺序为 `setup --project ... --name routing --connection-settings ... --model sonnet --question ... --yes --json`、`serve`、`submit`、`show`。另一个 `failover` setup 使用相同固定测试仓库 SHA `8d8ca90c1b7c3ac6651e75282cc540760ffe5b50`。仓库包含已提交的 `ROUTING_85` 标记及 entry.mjs → describe.mjs 的 describeProject 调用。完整 argv 和观察条件保存在归档脚本中。
+
+热切换执行 `66a9b1f6-da8b-48bf-bb26-860d95da4544`，harness session `41e6eb3a-5ac4-4b4d-882a-81271c638ef3`。先要求原生 Bash 工具执行 `sleep 4; cat README.md`；观察到该工具调用后，在 `2026-10-16T18:35:50.105Z` 至 `18:35:50.150Z` 之间执行独立实例的 `provider switch deepseek`。同一 session 的第一条代理记录为 `via-main-proxy` / 响应模型 `gpt-6-luna`，后三条为 `deepseek` / `deepseek-flash`，全部状态 200。四条 request_model 均为 `claude-sonnet-4-6`，harness init 为 `claude-sonnet-4-6[1M]`。这直接区分了固定客户端参数和可变代理上游；响应模型仍只是代理记录，不证明供应商内部物理模型。
+
+failover 执行 `e96de3c0-fd96-4934-be81-8f7386025a5a`，session `f8dfd5a2-4222-4da5-a866-a606df4add82`。独立实例切到 `controlled-503`，依次 `failover add controlled-503`、`failover add deepseek`、`failover enable`。本地测试端点累计收到三次 `/v1/messages?beta=true` 请求并返回 503；失败与成功请求在时间上交错，该 session 的三条成功代理记录均为真实 DeepSeek、响应模型 `deepseek-flash`、状态 200；request_model 始终为 `claude-sonnet-4-6`。provider health 记录失败计数 3，但 is_healthy 仍为 1，故不声称触发了熔断。该项是受控故障加真实 fallback 的混合验收，不冒充真实供应商宕机或全部重试策略覆盖。
+
+两次只读回答均包含正确标记和调用关系，exit 0、contract valid、agent-exit-marker 已保存；marker 后 `docker top` 均无 Claude/Node 进程，随后停止各自保活容器和控制服务。热切换场景另有只读根文件系统及全部 mount 为只读的 inspect 原件。两只容器均已删除。独立代理 disable 后端口关闭，daemon 状态为不可达；后续 daemon stop 返回 socket 不存在，未把这次 stop 当作成功停止的证据。用户原始 settings 文件 SHA-256 和当前 provider ID 与运行前完全一致。
+
+扫描 125 个证据/脚本文件，实际认证字段字节未出现在 Agent data、报告、日志或 session 中。脚本内的固定 `issue85-controlled-failure` 是测试端点的合成凭据，单独排除后仍核对真实凭据零命中。独立实例的 private、HOME、配置数据库和代理状态目录已删除，避免保留连接副本；归档只保留脱敏代理请求摘要、执行日志和复验脚本。脚本引用的凭据已删除，重跑需要重新提供授权连接。
+
+本轮持久归档：`/home/canxer/.local/state/sandcastle-orchestrator-acceptance/issue-85-routing-ab4398e/`，权限 0700。`evidence.tar.gz` SHA-256 为 `4999e3e508f4e5d6d9b8e5fedc36261bb482d62fa648c02f2e122ca37d14f757`；同目录 `sha256.json` 记录基线、候选包哈希和 CC-Switch 版本。`routing/evidence.json`、`routing/failover-evidence.json`、`routing/cleanup.json` 分别保存两次执行和收尾事实。仅补文档，未重新构建或运行未变的产品全套测试；未发布、推送或修改远端 issue。
