@@ -2,34 +2,30 @@
 
 首版面向 Linux，要求 Node.js 24+。控制服务还需要 util-linux 的 `flock`；执行任务需要 Git、Docker daemon 和管理员预先部署的可信镜像。不会自动安装系统依赖、拉取镜像、加载用户配置或启动服务。macOS/Windows 请使用 Linux 环境或 WSL，本版本不承诺原生执行。
 
-## 安装本地验证产物
+## 安装正式版本
 
-目前只验证本地 tgz，尚未发布 npm 或 GitHub Release，也未核实 scope/public 发布权限。不要把下面的本地安装结果当成远端渠道可用。安装生产依赖可能联网，不是离线安装。
+0.1.0 已发布到 [npm](https://www.npmjs.com/package/@canxer314/sandcastle-orchestrator/v/0.1.0) 和 [GitHub Release](https://github.com/canxer314/sandcastle-orchestrator/releases/tag/v0.1.0)。两个渠道使用同一已验收 tgz，正式安装与真实 Docker 快速开始证据见[发布验收](https://github.com/canxer314/sandcastle-orchestrator/blob/master/docs/issue-86-release-acceptance.md)。安装生产依赖可能联网，不是离线安装。
 
-维护者在开发仓库中用 pnpm 构建并打包：
-
-```sh
-pnpm install --frozen-lockfile
-pnpm run typecheck
-pnpm run build
-pnpm pack --pack-destination /tmp
-# /tmp/canxer314-sandcastle-orchestrator-0.1.0.tgz
-```
-
-消费者不需要 clone 仓库、pnpm、全局 tsx 或手工编译。以下 prefix 必须独立于配置、运行数据和业务仓库；将 tgz 路径替换为实际产物的绝对路径：
+消费者不需要 clone 仓库、pnpm、全局 tsx 或手工编译。prefix 必须独立于配置、运行数据和业务仓库：
 
 ```sh
 PREFIX="$HOME/.local/sandcastle-orchestrator"
-npm install --global --prefix "$PREFIX" /tmp/canxer314-sandcastle-orchestrator-0.1.0.tgz
+npm install --global --prefix "$PREFIX" @canxer314/sandcastle-orchestrator
 export PATH="$PREFIX/bin:$PATH"
 sandcastle-orchestrator --version
 sandcastle-orchestrator --help
-sandcastle-orchestrator serve --help
 ```
 
-正式命令固定为 `sandcastle-orchestrator`，不会覆盖依赖已有的 `sandcastle` 命令。`--version` 只输出产物版本。无参数、根帮助和子命令帮助不加载配置、不连接 socket，也不创建数据目录。`init` 和 `doctor` 已可使用，见下节；`setup` 可生成真实项目只读问答入口，见 [setup 指南](setup.md)；`demo` 和 `init --reset-demo` 已可使用，见 [demo/reset 指南](demo.md)。上述命令状态以本地构建产物为准，不表示已经发布。
+固定版本改用 `npm install --global --prefix "$PREFIX" @canxer314/sandcastle-orchestrator@0.1.0`。备用安装先从上述 Release 下载 `canxer314-sandcastle-orchestrator-0.1.0.tgz`，在下载目录核对并安装：
 
-远端发布需另行授权。完成包名、scope、public 权限及发布后消费核验后，主渠道将是 `npm install --global @canxer314/sandcastle-orchestrator`；固定版本使用 `npm install --global @canxer314/sandcastle-orchestrator@VERSION`，备选是在 Release 下载同一 tgz 后按上面安装。`VERSION` 不是可直接运行的版本号。npm 与 Release 必须使用同一份已验收产物，不重新打包；registry 404 不证明有发布权限。npx 仅用于临时体验，不作为常驻部署方式。
+```sh
+printf '%s  %s\n' 057d4c715d7ed3a71af698f7b69935044159cf193760d76ca4cbc399e8440562 canxer314-sandcastle-orchestrator-0.1.0.tgz | sha256sum --check
+npm install --global --prefix "$PREFIX" ./canxer314-sandcastle-orchestrator-0.1.0.tgz
+```
+
+正式命令固定为 `sandcastle-orchestrator`，不会覆盖依赖的 `sandcastle` 命令。无参数、根帮助和子命令帮助不加载配置、不连接 socket，也不创建数据目录。npx 仅用于临时体验，不作为常驻部署方式。
+
+包内 README/指南保留候选阶段状态，线上指南已按发布结果更新。不要为更新文档重打包并覆盖同版本；维护者流程见[发布操作](https://github.com/canxer314/sandcastle-orchestrator/blob/master/docs/release.md)。
 
 ## 初始化演示资源
 
@@ -38,7 +34,7 @@ sandcastle-orchestrator init
 sandcastle-orchestrator doctor
 ```
 
-init 创建 `~/.sandcastle-orchestrator/` 下独立的 ESM 配置、data/init.json 标记和已提交演示仓库，写入前显示路径并询问。非交互或 JSON 模式使用 `init --yes`；该选项不跳过安全检查。完整资源重复复用，不覆盖已有或不完整目录。doctor 检查依赖、Docker daemon、配置和镜像，缺条件给修复步骤，不自动安装、拉取或执行容器。真实 Docker/模型尚未据本增量验收。
+init 创建 `~/.sandcastle-orchestrator/` 下独立的 ESM 配置、data/init.json 标记和已提交演示仓库，写入前显示路径并询问。非交互或 JSON 模式使用 `init --yes`；该选项不跳过安全检查。完整资源重复复用，不覆盖已有或不完整目录。doctor 检查依赖、Docker daemon、配置和镜像，缺条件给修复步骤，不自动安装、拉取或执行容器。正式产物真实 Docker 验证见[发布验收](https://github.com/canxer314/sandcastle-orchestrator/blob/master/docs/issue-86-release-acceptance.md)，模型证据仍由 #85 单独记录。
 
 自定义路径、冲突保护、JSON 输出和未初始化诊断详见[演示初始化与环境检查](https://github.com/canxer314/sandcastle-orchestrator/blob/master/docs/onboarding.md)。doctor 成功后可显式运行 `sandcastle-orchestrator demo`，详见 [demo 指南](demo.md)。不把 doctor 成功当作测试通过。已有高级配置仍可使用下节的显式 serve 流程。
 
@@ -119,16 +115,15 @@ tar -C "$REPO_DIR" -cpf "$BACKUP/repository.tar" .
 
 恢复时同样使用尚不存在的新目录，不能解包到仍在使用的输入或仓库。先恢复和检查所有资源再启动服务；保留原始路径清单及备份开始之后的外部审计。配置可能含敏感数据，备份须沿用现有访问控制和加密要求，不额外导出主机秘密。
 
-程序版本可用以下方式更换。发布前 npm 和 GitHub Release 均不可用，不能把本地 tgz 写成已发布渠道；正式发布后，省略版本号安装 npm 当前 `latest` 稳定版。`VERSION` 必须替换为实际发布版本，Release 的附件必须是与 npm 发布完全相同的 tgz，不重新打包。
-
+程序版本可用以下方式更换。省略版本号安装 npm 当前 `latest` 稳定版；固定版本及备用附件示例使用已发布的 0.1.0。换版前仍需完成上面的暂停、核对与备份。
 ```sh
 PREFIX="$HOME/.local/sandcastle-orchestrator"
-# 最新稳定版，仅在 npm 正式发布后使用
+# 最新稳定版
 npm install --global --prefix "$PREFIX" @canxer314/sandcastle-orchestrator
 # 或固定到已发布的实际版本
-npm install --global --prefix "$PREFIX" @canxer314/sandcastle-orchestrator@VERSION
+npm install --global --prefix "$PREFIX" @canxer314/sandcastle-orchestrator@0.1.0
 # 或安装从该版本 Release 下载的同一 tgz
-npm install --global --prefix "$PREFIX" /absolute/path/to/canxer314-sandcastle-orchestrator-VERSION.tgz
+npm install --global --prefix "$PREFIX" ./canxer314-sandcastle-orchestrator-0.1.0.tgz
 export PATH="$PREFIX/bin:$PATH"
 sandcastle-orchestrator --version
 ```
@@ -181,12 +176,12 @@ npm uninstall --global --prefix "$PREFIX" @canxer314/sandcastle-orchestrator
 
 全局 CLI 的依赖不自动成为外部配置的依赖。需要 value import 的配置，请在配置目录建立自己的 ESM 项目，并安装它实际 import 的包；不要设置 NODE_PATH 或导入本仓库的内部源码。
 
-在新的配置目录中准备依赖，tgz 路径替换为实际产物：
+在新的配置目录中准备依赖：
 
 ```sh
 cd "$CONFIG"
 # package.json 已包含 "private": true 和 "type": "module"
-npm install /tmp/canxer314-sandcastle-orchestrator-0.1.0.tgz zod@4.6.5
+npm install @canxer314/sandcastle-orchestrator@0.1.0 zod@4.6.5
 npm install --save-dev typescript@5.9.3 @types/node@24
 ```
 

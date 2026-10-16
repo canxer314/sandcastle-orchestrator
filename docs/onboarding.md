@@ -1,6 +1,6 @@
 # 演示初始化与环境检查
 
-本阶段提供 `init` 和 `doctor`。检查完成后可显式运行 `demo`，重置使用 `init --reset-demo`，详见[演示测试与重置](demo.md)。真实项目入口见 [setup 指南](setup.md)。不要把环境检查通过当成测试已经执行。安装仍见[安装说明](installation.md)，目前只验证本地 tgz，未发布 npm/Release。
+本阶段提供 `init` 和 `doctor`。检查完成后可显式运行 `demo`，重置使用 `init --reset-demo`，详见[演示测试与重置](demo.md)。真实项目入口见 [setup 指南](setup.md)。不要把环境检查通过当成测试已经执行。安装仍见[安装说明](installation.md)，0.1.0 已发布，正式渠道证据见[发布验收](https://github.com/canxer314/sandcastle-orchestrator/blob/master/docs/issue-86-release-acceptance.md)。
 
 ```sh
 sandcastle-orchestrator init
@@ -66,3 +66,5 @@ Docker 访问权限由管理员配置，不建议用放宽 socket 权限绕过�
 两个命令默认可读，支持 `--json`，成功退出 `0`，条件不满足或失败退出 `1`。JSON stdout 只包含机器结果，计划、确认和可信配置加载提示在 stderr。`--help` 在没有资源或依赖时也可阅读。
 
 本增量通过源码外 tgz 安装后的 CLI/socket 验证资源生成、复用、冲突保护和模板消费。Docker/镜像分支使用受控 adapter；本票没有执行真实 Docker、远端模型或私人连接验收。`demo` 已提供，生命周期受控证据见 [demo 指南](demo.md)；真实 Docker 验收仍需单独记录。
+
+后续验收：#85 补充候选真实 Docker/模型证据；#86 完成正式 npm/Release 产物的 init/doctor/demo 验证，见[发布验收](https://github.com/canxer314/sandcastle-orchestrator/blob/master/docs/issue-86-release-acceptance.md)。上述“本增量”描述保留当时范围。

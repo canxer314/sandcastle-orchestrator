@@ -1,6 +1,6 @@
 # 使用指南
 
-当前仅提供本地候选 tgz，尚未发布 npm/Release。首次使用按以下顺序阅读；候选包验证不等于正式渠道验收。
+0.1.0 已发布到 npm 和 GitHub Release，正式渠道与 Docker 快速开始已验证，见[发布验收](https://github.com/canxer314/sandcastle-orchestrator/blob/master/docs/issue-86-release-acceptance.md)。首次使用按以下顺序阅读。
 
 1. [安装与包外配置](installation.md)，然后 [init 与 doctor](onboarding.md)、[demo 与 reset](demo.md)，首次本地测试不需要模型账号。
 2. 演示完成后，自行进入 [真实项目与只读 Agent 接入](setup.md)。setup 只生成资源，真实连接与任务需另获授权。

@@ -2,6 +2,8 @@
 
 本指南面向部署管理员，保留从本地练习、接入仓库、配置 Agent/工具到故障恢复的操作细节。普通使用者请先看[用户指南](user-guide.md)；配置与远端写入须由管理员按授权范围完成。
 
+> 下文是管理员从源码部署的高级流程。普通安装用户从[正式安装](installation.md)及 [init/doctor/demo](onboarding.md)开始，无需 pnpm。正式渠道验收见[发布记录](https://github.com/canxer314/sandcastle-orchestrator/blob/master/docs/issue-86-release-acceptance.md)。
+
 > 本指南对应当前 checkout 的 CLI。需要 Linux、Node.js 24+、pnpm 12.3.4、Git、util-linux `flock`；执行 capability 还需要 Docker daemon。示例明确使用可信官方基础镜像 `node:22.22-alpine`，由你自行执行 `docker pull`，不是 Sandcastle 自动下载；它适合本示例的 `/bin/sh`、`grep` 测试脚本，不代表适合真实业务或已包含项目依赖。容器使用 `--pull=never`、`--network none`，不联网安装容器依赖。
 
 ## 1. 做一个本地 test-commit
