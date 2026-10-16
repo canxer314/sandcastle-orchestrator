@@ -13,9 +13,9 @@
 - 本机 Docker daemon，且当前用户已有使用权限。不会自动安装、提权或拉镜像。
 - 已预部署的可信镜像，含 POSIX `sh`、`env`、Git、Node.js 和可用的原版 Claude Code CLI。记下镜像 digest 与容器 CLI 版本。不要把仅有 Node 的测试镜像当作 Agent 镜像。本教程没有验证某个真实镜像，也不提供未验收的镜像名。
 - 用户明确授权读取的独立 settings JSON，或明确选择复用的 live settings JSON，路径为绝对路径。它必须提供当前连接投影支持的静态 client-facing API key 或 Bearer token，且恰好一个有效。不要把值写进教程文件、任务输入或报告。复用不意味着复制整个 home、hooks、插件、MCP、permissions、CC-Switch 数据库或订阅登录。
-- 容器可达的 Anthropic Messages-compatible endpoint 与该 endpoint 接受的模型名。这是 Claude Code harness 的连接，不限定物理模型或上游认证来自 Anthropic。普通 Docker `bridge` 可出网；它不是 endpoint-only 隔离。宿主 `localhost` 通常无法从容器访问，本教程不建立自动桥，也不要求修改私人代理 listener。不支持的 helper、OAuth、云凭据、代理或 TLS 依赖需要管理员另行处理，不能自动换身份或关闭 TLS 校验。
+- 容器可达的 Anthropic Messages-compatible endpoint 与该 endpoint 接受的模型名。这是 Claude Code harness 的连接，不限定物理模型或上游认证来自 Anthropic。普通 Docker `bridge` 可出网；它不是 endpoint-only 隔离。本教程以容器直接可达 endpoint 为前提，不自行建立桥或修改私人代理 listener。已合入 #81 的设施仅在其支持条件下为 HTTP loopback 自动建立执行级桥，限制见[连接投影](connection-projection.md)；受控桥验证不替代真实 Docker/代理验收。不支持的 helper、OAuth、云凭据、代理或 TLS 依赖需要管理员另行处理，不能自动换身份或关闭 TLS 校验。
 
-连接白名单、优先级、秘密过滤的限制见[连接投影](connection-projection.md)。本例使用公开依赖 `@ai-hero/sandcastle@0.12.0` 的 `claudeCode(model)`，显式要求模型名。省略模型的内部适配器不在当前包根公开导出中，本教程不从 `src/connection` 偷导入、不自己复制适配器。显式值会覆盖连接来源的模型；代理最终路由仍由代理决定。
+连接白名单、优先级、秘密过滤的限制见[连接投影](connection-projection.md)。本例使用公开依赖 `@ai-hero/sandcastle@0.12.0` 的 `claudeCode(model)`，显式要求模型名。创建本教程之后，#82 已将省略模型的适配器公开为包根的 `claudeCode()`，需要继承来源模型时可从正式包导入该函数，不导入内部源码、不复制适配器。本例保留显式选择，显式值会覆盖连接来源的模型；代理最终路由仍由代理决定。
 
 选一个已获准、没有秘密的小仓库。不要把编排器源码当作默认目标，不要使用超出授权的数据。下面只读取现有 checkout，不 clone、fetch、commit、reset 或切分支。当前固定树导出不支持 symlink/submodule，仓库也不能提交 `.sandcastle/.env`。
 
@@ -197,5 +197,7 @@ pnpm test --maxWorkers=1
 本次 `pnpm run typecheck` 通过；`pnpm test --maxWorkers=1` 全套 14 文件、274 项通过、20 项真实环境 opt-in 跳过，包含 CLI/socket、role、MCP 与 8 项包消费测试。教程的 10 个 shell 代码块通过 `sh -n` 语法检查，没有据此执行 Docker 或模型。首次并发定向和全套曾出现既有 ready/restore/MCP 等待超时，串行全套原断言通过，未修改生产代码或放宽超时。
 
 创建 PR 前合入最新 `master` 的 `80bad49`，保留 #76/#77 已交付的查询和提交指南，并增加直达链接。组合基线重新验证 `pnpm run typecheck` 与 `pnpm test --maxWorkers=1`，18 文件通过、1 文件跳过，341 项通过、21 项真实环境 opt-in 跳过；公开包消费、CLI/socket 与受控组合路径全部通过。
+
+合并 PR 前再次同步 `master` 的 `78093a7`，保留 #78/#82 的包消费测试，更新公开模型适配器和 #81 执行桥的当前说明，不改示例显式模型选择。typecheck/build 通过；package/role/management/MCP 定向 139 项通过；串行全套 20 文件通过、1 文件跳过，377 项通过、21 项真实环境 opt-in 跳过。12 个本地链接和 10 个 shell 代码块检查通过。
 
 未运行真实 Docker、真实模型、私人连接、远端调用或发布，未验收所选镜像、认证、网络可达、模型答案和 role 实际调用 `list_root`。这些须在另获授权的环境通过相同用户入口验收并记录镜像/CLI 版本、固定 SHA、答案核对和独立停止证据。受控 adapter 通过不补齐父规格 #65 的真实 Agent 接入，也不替代历史特定环境的验收。

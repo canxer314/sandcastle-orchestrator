@@ -4,7 +4,7 @@
 
 ## 安装与运行
 
-正式包名为 `@canxer314/sandcastle-orchestrator`，命令为 `sandcastle-orchestrator`。目前已验证本地 tgz 安装，尚未发布 npm/Release。包外安装、可信配置、公开类型与运行时 import 见[安装说明](docs/installation.md)。安装消费者只需 Node/npm，不需要 pnpm、源码树或全局 tsx；产物安装可能联网下载生产依赖。`--help`、子命令 `--help` 和 `--version` 不需要配置或服务；`init`、`doctor`、`demo`、`setup` 尚不可用。
+正式包名为 `@canxer314/sandcastle-orchestrator`，命令为 `sandcastle-orchestrator`。目前已验证本地 tgz 安装，尚未发布 npm/Release。包外安装、可信配置、公开类型与运行时 import 见[安装说明](docs/installation.md)。安装消费者只需 Node/npm，不需要 pnpm、源码树或全局 tsx；产物安装可能联网下载生产依赖。`--help`、子命令 `--help` 和 `--version` 不需要配置或服务。`init` 创建独立演示资源，`doctor` 检查依赖和资源，见[演示初始化与环境检查](docs/onboarding.md)；`setup` 为真实项目生成独立只读问答入口，见 [setup 指南](docs/setup.md)；`demo`、`init --reset-demo` 尚不可用，检查通过不代表已运行测试。
 
 需要 Linux、Node.js 24+ 和 util-linux 提供的 `flock`；macOS/Windows 请使用 Linux 或 WSL，不承诺原生执行。开发源码仍使用 pnpm 12.3.4。执行能力还需要本机 Docker daemon、Git 和预先部署的可信测试镜像；不会自动拉取镜像。Sandcastle 固定为 `0.12.0`，Effect 固定为 `3.20.0`，升级需显式更新依赖和锁文件。以下开发入口保持可用：
 
@@ -165,7 +165,7 @@ const providers = [{
 }];
 ```
 
-投影只支持容器可达的 Anthropic Messages-compatible client endpoint 和静态 API key 或 Bearer token，不限定模型厂商。没有自动 localhost 桥，不改宿主执行、不新增认证方式。普通角色可显式配置 `docker.network: 'bridge'` 出网；历史 PR 分析示例的 endpoint-only 网络要求限于其当时受控部署，不是通用接入新门槛。host 网络禁令、确定性测试禁网、路径/权限及 unknown 人工核对边界不变。
+投影支持 Anthropic Messages-compatible client endpoint 和静态 API key 或 Bearer token，不限定模型厂商。显式容器可达 endpoint 原样使用；#81 为所选 HTTP loopback endpoint 增加本次执行所有的 TCP 桥，仅支持能核验 gateway 的本机 Linux rootful Docker bridge。HTTPS loopback 的 TLS/SNI 改写明确不支持，不关闭证书校验；详见[桥接范围与验收](docs/connection-projection.md#执行级-localhost-桥81)。不改宿主执行、不新增认证方式。普通角色可显式配置 `docker.network: 'bridge'` 出网；历史 PR 分析示例的 endpoint-only 网络要求限于其当时受控部署，不是通用接入新门槛。host 网络禁令、确定性测试禁网、路径/权限及 unknown 人工核对边界不变。
 
 受控测试验证 live 切换、模型参数、冲突/不支持依赖失败、日志/报告/session 秘密过滤。2026-10-16 已获准用真实 Docker、原版 Claude Code 2.1.296 和合成凭据完成受控 Messages endpoint 验收，见 [#80 Docker 验收记录](docs/issue-80-docker-acceptance.md)。未读取私人连接或调用真实模型；真实 provider、代理和 localhost 桥仍未据此验收。
 
