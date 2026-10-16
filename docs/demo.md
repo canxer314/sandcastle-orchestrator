@@ -53,7 +53,7 @@ sandcastle-orchestrator init --reset-demo --data /srv/demo/data
 sandcastle-orchestrator init --reset-demo --data /srv/demo/data --yes --json
 ```
 
-reset 会说明并询问是否丢弃演示仓库中的全部修改。确认后仅重建演示仓库，保留配置、data、初始化标记、执行历史和日志，不升级配置。成功退出 `0`，拒绝或失败退出 `1`。`--yes` 只省去询问，不绕过路径、完整初始化、服务占用和未确认停止保护。普通 `init` 仍不覆盖资源。链接 worktree 或外部共享 Git metadata 不能作为 reset 目标。
+reset 会说明并询问是否丢弃演示仓库中的全部修改。确认后仅重建演示仓库，保留配置、data、初始化标记、执行历史和日志，不升级配置。成功退出 `0`，拒绝或失败退出 `1`。`--yes` 只省去询问，不绕过路径、完整初始化、服务占用和未确认停止保护。普通 `init` 仍不覆盖资源。链接 worktree、拥有其他已登记 worktree 的主仓库，或外部共享 Git metadata，均不能作为 reset 目标。
 
 重建先在同级临时目录准备新仓库，再交换目录。若文件系统在交换或清理时失败，保留现场并按报错检查同级 `.reset-*` 目录，不要删除 data 或执行证据。
 

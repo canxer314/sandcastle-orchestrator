@@ -160,6 +160,16 @@ async function createDemoRepo(repo: string) {
   await git(repo, ['-c', 'user.name=Sandcastle Demo', '-c', 'user.email=demo@example.invalid', '-c', 'commit.gpgsign=false', 'commit', '-m', 'Initialize deterministic demo']);
 }
 
+async function resetRepoIdentity(repo: string) {
+  const identity = await lstat(repo);
+  if (!identity.isDirectory() || !(await lstat(join(repo, '.git'))).isDirectory()) throw Error('Reset requires an independent demo repository, not a linked worktree');
+  const common = String((await git(repo, ['rev-parse', '--git-common-dir'])).stdout).trim();
+  if (await physicalPath(resolve(repo, common)) !== join(repo, '.git')) throw Error('Reset refuses shared or external Git metadata');
+  const worktrees = String((await git(repo, ['worktree', 'list', '--porcelain', '-z'])).stdout).split('\0').filter(field => field.startsWith('worktree '));
+  if (worktrees.length !== 1) throw Error('Reset refuses a demo repository with other registered worktrees; preserve their shared Git metadata');
+  return identity;
+}
+
 async function resetDemo(paths: Paths, marker: Marker, yes: boolean) {
   console.error(`Reset will discard ALL demo repository modifications: ${paths.demoRepo}. Configuration, data, records and logs are retained.`);
   const releaseDemo = await acquireControlLock(join(paths.data, 'demo.lock'));
@@ -169,10 +179,7 @@ async function resetDemo(paths: Paths, marker: Marker, yes: boolean) {
       await assertDemoIdle(paths.data);
       await separate(paths);
       await verify(paths, marker);
-      const before = await lstat(paths.demoRepo);
-      if (!before.isDirectory() || !(await lstat(join(paths.demoRepo, '.git'))).isDirectory()) throw Error('Reset requires an independent demo repository, not a linked worktree');
-      const common = String((await git(paths.demoRepo, ['rev-parse', '--git-common-dir'])).stdout).trim();
-      if (await physicalPath(resolve(paths.demoRepo, common)) !== join(paths.demoRepo, '.git')) throw Error('Reset refuses shared or external Git metadata');
+      const before = await resetRepoIdentity(paths.demoRepo);
       if (!yes) {
         const prompt = createInterface({input:process.stdin, output:process.stderr});
         try { if (!/^y(es)?$/i.test((await prompt.question('Discard demo changes and rebuild this repository? [y/N] ')).trim())) throw Error('Reset declined; no resources changed'); }
@@ -180,7 +187,7 @@ async function resetDemo(paths: Paths, marker: Marker, yes: boolean) {
       }
       await separate(paths);
       await assertDemoIdle(paths.data);
-      const after = await lstat(paths.demoRepo);
+      const after = await resetRepoIdentity(paths.demoRepo);
       if (!after.isDirectory() || before.dev !== after.dev || before.ino !== after.ino) throw Error('Demo repository changed during confirmation; preserve it');
       const staging = `${paths.demoRepo}.reset-${randomUUID()}`;
       const previous = `${staging}.previous`;

@@ -1,15 +1,15 @@
 import { lstat, readdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { offlineQuery, type RecordReader } from '../record-queries.js';
+import { offlineQuery, toolNeedsReview, toolReconciled, type RecordReader } from '../record-queries.js';
 
 export type Detail = ReturnType<RecordReader['show']>;
 const terminal = ['completed', 'cancelled', 'resolved', 'start_failed'];
 
 export function stopped(detail: Detail): boolean {
   if (!detail.execution || !terminal.includes(String(detail.execution.status))) return false;
-  return detail.attempts.every(a => terminal.includes(a.runState) && !a.requiresAttention && !a.persistenceError
+  return detail.attempts.every(a => terminal.includes(a.runState) && !a.requiresAttention && (!a.persistenceError || a.runState === 'resolved' && a.reconciliation)
     && (!a.cancellation || a.stopConfirmation || a.runState === 'start_failed')
-    && (a.toolCalls ?? []).every((c: any) => terminal.includes(c.runState) && !c.requiresAttention && !c.persistenceError && c.publication?.state !== 'unknown' && (!c.cancellation || c.stopConfirmation)));
+    && (a.toolCalls ?? []).every((c: Record<string, any>) => !toolNeedsReview(c) || toolReconciled(c)));
 }
 
 export async function assertDemoIdle(data: string, ownRun?: string) {

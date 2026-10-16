@@ -30,7 +30,17 @@ async function fixture(run = "echo controlled-test; exit 0", inspect = '{"Runnin
   return {base, bin, calls, env, config, data, repo};
 }
 afterEach(async () => {
-  for (const child of children) child.kill('SIGTERM');
+  for (const dir of dirs) {
+    await writeFile(join(dir, 'stop'), 'test cleanup');
+    await writeFile(join(dir, 'release-preflight'), 'test cleanup');
+  }
+  await Promise.all([...children].map(async child => {
+    const closed = once(child, 'close');
+    child.kill('SIGINT');
+    const second = setTimeout(() => child.kill('SIGINT'), 100);
+    const fallback = setTimeout(() => child.kill('SIGTERM'), 1500);
+    try { await closed; } finally { clearTimeout(second); clearTimeout(fallback); children.delete(child); }
+  }));
   await Promise.all(dirs.splice(0).map(dir => rm(dir, {recursive:true, force:true})));
 });
 
@@ -64,7 +74,8 @@ test('reset requires explicit confirmation and rebuilds only the repo, keeping c
   const run = await cli(['demo', '--data', f.data, '--json'], f.env).done;
   expect(run.code, run.stderr).toBe(0);
   const original = await readFile(f.config, 'utf8');
-  const records = await readFile(join(f.data, 'records.sqlite'));
+  const history = (await cli(['list', '--data', f.data, '--offline']).done).stdout;
+  const evidence = (await cli(['logs', JSON.parse(run.stdout).executionId, '--data', f.data, '--offline']).done).stdout;
   const logs = await readdir(join(f.data, 'demo-runs'));
   await writeFile(join(f.repo, 'user-change'), 'discard explicitly');
   const refused = await cli(['init', '--reset-demo', '--data', f.data, '--json'], f.env).done;
@@ -77,7 +88,8 @@ test('reset requires explicit confirmation and rebuilds only the repo, keeping c
   expect(await readdir(f.repo)).toEqual(expect.arrayContaining(['.git', 'test.cjs']));
   expect(await readdir(f.repo)).not.toContain('user-change');
   expect(await readFile(f.config, 'utf8')).toBe(original);
-  expect(await readFile(join(f.data, 'records.sqlite'))).toEqual(records);
+  expect((await cli(['list', '--data', f.data, '--offline']).done).stdout).toBe(history);
+  expect((await cli(['logs', JSON.parse(run.stdout).executionId, '--data', f.data, '--offline']).done).stdout).toBe(evidence);
   expect(await readdir(join(f.data, 'demo-runs'))).toEqual(logs);
 }, 15000);
 
@@ -288,3 +300,65 @@ test('the owned service rechecks legacy work under its lock after parent preflig
   const history = JSON.parse((await cli(['list', '--data', f.data, '--offline']).done).stdout);
   expect(history).toHaveLength(1); expect(history[0].execution.status).toBe('queued');
 }, 20000);
+
+test('JSON demo redirects trusted validation diagnostics out of stdout', async () => {
+  const f = await fixture();
+  await writeFile(f.config, (await readFile(f.config, 'utf8')).replace('validate(input: unknown) {', 'validate(input: unknown) { console.log("validation diagnostic");').replace('return input as string;', 'console.log("commit diagnostic"); return input as string;'));
+  const run = await cli(['demo', '--data', f.data, '--json'], f.env).done;
+  expect(run.code, run.stderr).toBe(0);
+  expect(JSON.parse(run.stdout)).toMatchObject({testResult:'passed'});
+  expect(run.stderr).toContain('validation diagnostic'); expect(run.stderr).toContain('commit diagnostic');
+}, 15000);
+
+test('reset refuses a main demo repository that owns another worktree', async () => {
+  const f = await fixture(); const other = join(f.base, 'other-worktree');
+  await exec('git', ['-C', f.repo, 'worktree', 'add', '-b', 'external-work', other]);
+  await writeFile(join(other, 'external'), 'preserve external work');
+  await exec('git', ['-C', other, 'add', 'external']);
+  await exec('git', ['-C', other, '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', '-c', 'commit.gpgsign=false', 'commit', '-m', 'External commit']);
+  const sha = (await exec('git', ['-C', other, 'rev-parse', 'HEAD'])).stdout;
+  const reset = await cli(['init', '--reset-demo', '--data', f.data, '--yes', '--json'], f.env).done;
+  expect(reset.code, reset.stdout + reset.stderr).toBe(1);
+  expect(reset.stdout).toContain('worktree');
+  expect((await exec('git', ['-C', other, 'rev-parse', 'HEAD'])).stdout).toBe(sha);
+  expect(await readFile(join(other, 'external'), 'utf8')).toBe('preserve external work');
+}, 15000);
+
+test('receipt recovery after execution timeout shares the remaining cleanup budget', async () => {
+  const f = await fixture('echo unknown-end', '{"Running":true,"Status":"running","ExitCode":0}');
+  const timers = join(f.base, 'timers');
+  const run = await cli(['demo', '--data', f.data, '--json'], {...faults(f, 'receipt-budget'), DEMO_TEST_TIMERS:timers}).done;
+  expect(run.code, run.stdout + run.stderr).toBe(2);
+  const waits = (await readFile(timers, 'utf8')).trim().split('\n').map(Number);
+  const execution = waits.findIndex(ms => ms > 200_000);
+  expect(execution).toBeGreaterThanOrEqual(0);
+  // Startup and recovery each have their own boundary. After recovery consumed
+  // 29 seconds, cancellation cannot obtain a fresh 30-second socket wait.
+  expect(waits.slice(execution + 2).every(ms => ms <= 1000), waits.join(',')).toBe(true);
+}, 15000);
+
+test('manually reconciled prior tool work no longer blocks demo', async () => {
+  const f = await fixture();
+  const {Records} = await import('../src/records.js');
+  const {loadConfiguration} = await import('../src/config.js');
+  const {call} = await import('../src/control.js');
+  const sha = (await exec('git', ['-C', f.repo, 'rev-parse', 'HEAD'])).stdout.trim();
+  // Seed a prior interrupted tool through the existing record API; all checks
+  // and manual reconciliation below use the public CLI/socket seam.
+  const records = new Records(join(f.data, 'records.sqlite'));
+  const {receipt} = await records.submit({repo:'demo', capability:'demo-test', input:sha, source:'prior-tool'}, await loadConfiguration(f.config));
+  const id = String(receipt.executionId);
+  const attempt = records.beginAttempt(id, 'prior', 'demo-test', 'demo-test', sha, {kind:'agent', toolCalls:[{id:'1', runState:'unknown', publication:{state:'unknown'}}]});
+  records.finishAttempt(attempt, 'unknown', {actualSha:sha}); records.close();
+  const service = cli(['serve', '--data', f.data, '--config', f.config, '--maintenance', 'paused'], f.env);
+  const socket = join(f.data, 'control.sock');
+  await expect.poll(async () => { try { await call(socket, {command:'list'}); return true; } catch { return false; } }, {timeout:8000}).toBe(true);
+  const audit = {source:'operator', reason:'controlled fixture audit', handling:'all work independently stopped', externalResults:'reviewed'};
+  await call(socket, {command:'confirm-stop', id, call:'1', ...audit});
+  await call(socket, {command:'confirm-stop', id, ...audit});
+  await call(socket, {command:'resolve', id, ...audit});
+  await call(socket, {command:'resume', target:'all', ...audit});
+  service.child.kill('SIGTERM'); await service.done;
+  const run = await cli(['demo', '--data', f.data, '--json'], f.env).done;
+  expect(run.code, run.stdout + run.stderr).toBe(0);
+}, 15000);

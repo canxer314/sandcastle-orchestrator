@@ -103,8 +103,12 @@ export async function demo(values: Record<string, unknown>) {
     if (checks.some(c => !c.ok)) throw Error(checks.filter(c => !c.ok).map(c => `${c.detail}. ${c.fix}`).join('\n'));
     result.sha = String((await git(paths.demoRepo, ['rev-parse', '--verify', 'HEAD^{commit}'])).stdout).trim();
     if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(result.sha)) throw Error('Expected full commit SHA');
-    await capability.validate(result.sha);
-    if (capability.execution!.commit(result.sha) !== result.sha) throw Error('Demo capability must execute the selected full SHA');
+    const stdout = process.stdout.write;
+    try {
+      process.stdout.write = process.stderr.write.bind(process.stderr);
+      await capability.validate(result.sha);
+      if (capability.execution!.commit(result.sha) !== result.sha) throw Error('Demo capability must execute the selected full SHA');
+    } finally { process.stdout.write = stdout; }
     const tree = String((await git(paths.demoRepo, ['ls-tree', '-rz', '--full-tree', result.sha])).stdout);
     if (tree.split('\0').filter(Boolean).some(entry => !/^(100644|100755) blob /.test(entry))) throw Error('Execution snapshot does not support symlinks or submodules');
     if (String((await git(paths.demoRepo, ['status', '--porcelain'])).stdout).trim()) console.error('仅测已提交版本 / Only the committed version will be tested; working tree changes are preserved.');
@@ -157,13 +161,14 @@ export async function demo(values: Record<string, unknown>) {
       const accepted = matches.filter(d => d.execution);
       if (accepted.length === 1) {
         result.acceptance = 'accepted'; result.executionId = accepted[0].execution!.id; result.requestId = accepted[0].request.id;
-        if (!interrupted) cleanupDeadline = undefined;
+        if (!interrupted && Date.now() < executeDeadline) cleanupDeadline = undefined;
       } else if (matches.length && accepted.length === 0) {
         result.acceptance = 'rejected'; result.executionStopped = true; result.testResult = 'not-run';
         throw Error('Read-only source/key query confirms rejection');
       } else throw Error('Acceptance unknown: no unique accepted record. No match is not permission to resend');
     }
     await save();
+    if (Date.now() >= executeDeadline) throw Error('Demo execution wait budget expired; entering cancellation with the remaining cleanup budget');
     console.error(`Demo: execution ${result.executionId}; waiting for result and stop evidence`);
     do {
       await observe(cleanupDeadline ?? executeDeadline, !!cleanupDeadline);
