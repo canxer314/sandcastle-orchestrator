@@ -165,7 +165,7 @@ const providers = [{
 
 投影只支持容器可达的 Anthropic Messages-compatible client endpoint 和静态 API key 或 Bearer token，不限定模型厂商。没有自动 localhost 桥，不改宿主执行、不新增认证方式。普通角色可显式配置 `docker.network: 'bridge'` 出网；历史 PR 分析示例的 endpoint-only 网络要求限于其当时受控部署，不是通用接入新门槛。host 网络禁令、确定性测试禁网、路径/权限及 unknown 人工核对边界不变。
 
-受控测试验证 live 切换、模型参数、冲突/不支持依赖失败、日志/报告/session 秘密过滤。未读取私人连接、运行真实 Docker 或调用真实 provider；这些均仍未验收，需要另行授权。
+受控测试验证 live 切换、模型参数、冲突/不支持依赖失败、日志/报告/session 秘密过滤。2026-10-16 已获准用真实 Docker、原版 Claude Code 2.1.296 和合成凭据完成受控 Messages endpoint 验收，见 [#80 Docker 验收记录](docs/issue-80-docker-acceptance.md)。未读取私人连接或调用真实模型；真实 provider、代理和 localhost 桥仍未据此验收。
 
 ### 协作停止与显式期限（#20）
 
