@@ -29,7 +29,7 @@ sandcastle-orchestrator setup --project /srv/my-project --connection-environment
 
 连接白名单、认证冲突、unsupported helpers 和模型继承全部复用 [#80 连接投影](connection-projection.md)。不新增认证方式，不强制另取 API key 或登录；宿主 `/login` 凭据复制/共享挂载不是受支持的迁移方式。生成资源只保存来源路径和非敏感选项。容器及获授权 Docker 管理者可能看到运行时认证，不能据此宣称完全隔离凭据。
 
-当前没有 localhost 自动桥。连接必须使用容器可达 endpoint，`localhost` 和 `127.0.0.1` 指容器自身，host-gateway 名称也不会转发宿主 loopback。不修改代理 listener，不暗示 #81 已交付。
+已合入 #81 的执行级 HTTP loopback 桥，生成配置直接消费现有 runner，不复制桥接实现。仅支持可核实的本机 Linux rootful Docker bridge；HTTPS loopback、远程/rootless Docker 等须使用容器可达 endpoint，限制见 [连接投影与执行桥](connection-projection.md)。setup 不探测桥或 endpoint，不将实现合入等同于真实 Docker/代理验收。
 
 ## 资源、冲突与手工合并
 

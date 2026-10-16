@@ -34,7 +34,7 @@ async function assertNoSecrets(directory: string) {
   }
 }
 
-type FixtureOptions = { model?: string; source?: 'settings' | 'environment'; settings?: unknown; missing?: boolean; session?: Buffer; host?: Record<string, string>; holdFirst?: boolean; tool?: boolean; executable?: boolean; managedSettings?: boolean };
+type FixtureOptions = { bridge?: boolean; missingExit?: boolean; failCreate?: boolean; model?: string; source?: 'settings' | 'environment'; settings?: unknown; missing?: boolean; session?: Buffer; host?: Record<string, string>; holdFirst?: boolean; tool?: boolean; executable?: boolean; managedSettings?: boolean };
 async function connectionFixture(options: FixtureOptions = {}) {
   const fixture = await temporary(), data = await temporary(), repo = await temporary();
   const git = (...args: string[]) => execFileSync('git', ['-C', repo, ...args], {encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore']}).trim();
@@ -43,7 +43,9 @@ async function connectionFixture(options: FixtureOptions = {}) {
   const sha = git('rev-parse', 'HEAD');
   const requests: any[] = [];
   let release: (() => void) | undefined;
+  const requestPaths: string[] = [];
   const server = createServer(async (req, res) => {
+    requestPaths.push(req.url!);
     let body = ''; for await (const chunk of req) body += chunk;
     requests.push(JSON.parse(body));
     if (options.holdFirst && requests.length === 1) await new Promise<void>(resolve => { release = resolve; });
@@ -51,7 +53,8 @@ async function connectionFixture(options: FixtureOptions = {}) {
   });
   servers.push(server);
   server.listen(0, '127.0.0.1'); await once(server, 'listening');
-  const endpoint = `http://127.0.0.1:${(server.address() as {port: number}).port}`;
+  // Container-ready address in this controlled adapter; the fixture harness resolves it locally.
+  const endpoint = `http://${options.bridge ? '127.0.0.1' : 'container.fixture'}:${(server.address() as {port: number}).port}${options.bridge ? '/proxy/%2Fprefix' : ''}`;
   const source = join(fixture, 'selected.json');
   const settings = (model: string, token: string) => ({
     env: {ANTHROPIC_BASE_URL: endpoint, ANTHROPIC_AUTH_TOKEN: token, ANTHROPIC_MODEL: model,
@@ -71,10 +74,16 @@ const fs=require('node:fs');
 const args=process.argv.slice(2);
 const state=${JSON.stringify(join(fixture, 'runtime.json'))};
 fs.appendFileSync(${JSON.stringify(calls)},JSON.stringify(args)+'\\n');
-if(args[0]==='run') {
+if(args[0]==='context')console.log(JSON.stringify([{Endpoints:{docker:{Host:'unix:///controlled/docker.sock'}}}]));
+else if(args[0]==='info')console.log(JSON.stringify({OSType:'linux',SecurityOptions:['name=seccomp'],OperatingSystem:'Controlled Linux'}));
+else if(args[0]==='network')console.log(JSON.stringify([{Id:'${'b'.repeat(64)}',Name:'bridge',Options:{'com.docker.network.bridge.name':'fixture-bridge'},Driver:'bridge',Scope:'local',IPAM:{Config:[{Subnet:'127.0.0.0/8',Gateway:'127.0.0.2'}]},Containers:{'${'a'.repeat(64)}':{IPv4Address:'127.0.0.3/8'}}}]));
+else if(args[0]==='inspect')console.log(JSON.stringify({Id:'${'a'.repeat(64)}',State:{Running:true},NetworkSettings:{Networks:{bridge:{NetworkID:'${'b'.repeat(64)}',IPAddress:'127.0.0.3',Gateway:'127.0.0.2'}}}}));
+else if(args[0]==='run') {
   const env={PATH:process.env.PATH};
   for(let i=0;i<args.length;i++)if(args[i]==='--env'){const value=args[++i],at=value.indexOf('=');if(at<0)env[value]=process.env[value];else env[value.slice(0,at)]=value.slice(at+1);}
-  fs.writeFileSync(state,JSON.stringify(env));console.log('controlled-container');
+  fs.writeFileSync(state,JSON.stringify(env));
+  ${options.failCreate ? 'process.exit(1);' : ''}
+  console.log('${'a'.repeat(64)}');
 } else if(args[0]==='exec') {
   const command=args.at(-1);
   if(command.includes('ORCH_CONNECTION_CHECK')) process.stdout.write(${JSON.stringify(options.managedSettings ? 'unsupported' : 'ready')});
@@ -86,7 +95,7 @@ if(args[0]==='run') {
     const env=JSON.parse(fs.readFileSync(state));
     ${options.tool ? `env.ORCHESTRATOR_TOOL_SOCKET=${JSON.stringify(join(data,'attempts'))}+ '/' + args[args.indexOf('--workdir')+2].slice(5,-2) + '/tools/tools.sock';` : ''}
     const result=spawnSync('sh',['-c',command],{env,input:fs.readFileSync(0),encoding:'utf8'});
-    const output=Buffer.from(result.stdout||'');
+    const output=Buffer.from(${options.missingExit ? "(result.stdout||'').replace(/\\nORCH_EXIT_[a-f0-9]+:[0-9]+\\n/g,'\\n')" : "result.stdout||''"});
     const split=output.indexOf(Buffer.from('中'))+1;
     process.stdout.write(output.subarray(0,split));
     setTimeout(()=>{process.stdout.write(output.subarray(split));process.stderr.write(result.stderr||'');process.exit(result.status??1);},30);
@@ -105,8 +114,17 @@ providers:[{id:'claude',agent,${options.executable ? "mcp:'claude-code'," : ''}c
 ${options.executable ? "tools:[{id:'inspect',description:'Inspect executable tool',capability:'inspect-capability',inputSchema:z.object({token:z.string()}).strict()}]," : options.tool ? "tools:[{id:'inspect',description:'Inspect tool',async read(input){return {diagnostic:input.token}}}]," : ''}
 roles:[{id:'report',description:'Read-only report',validate(){},buildPrompt(){return 'Inspect the fixed repository'},skills:[],tools:${options.tool || options.executable ? "['inspect']" : '[]'},validateReport(output){return JSON.parse(output)}}],
 roleBindings:[{role:'report',provider:'claude',environment:'env',commit(){return '${sha}'}}]};`);
+  let launch = ['--import', 'tsx', 'src/cli.ts', 'serve', '--config', config, '--data', data];
+  if (options.bridge) {
+    const launcher = join(fixture, 'serve.mts');
+    await writeFile(launcher, `import os from 'node:os';import fs from 'node:fs/promises';import {syncBuiltinESMExports} from 'node:module';
+const originalStat=fs.stat;os.networkInterfaces=()=>({'fixture-bridge':[{address:'127.0.0.2',family:'IPv4',internal:false}]});
+fs.stat=async path=>path==='/controlled/docker.sock'?{isSocket:()=>true,uid:0}:path==='/sys/class/net/fixture-bridge/bridge'?{isDirectory:()=>true}:originalStat(path);
+syncBuiltinESMExports();const {serve}=await import(${JSON.stringify(join(root, 'src/control.ts'))});await serve(${JSON.stringify(data)},${JSON.stringify(config)});`);
+    launch = ['--import', 'tsx', launcher];
+  }
   // Allowlist the child environment: never inherit real provider credentials, proxies or opt-ins.
-  const child = spawn(process.execPath, ['--import', 'tsx', 'src/cli.ts', 'serve', '--config', config, '--data', data], {cwd: root,
+  const child = spawn(process.execPath, launch, {cwd: root,
     env: {PATH: `${fixture}:/usr/bin:/bin`, HOME: fixture, ORCH_REAL_MCP: '', ORCH_REAL: '',
       ANTHROPIC_AUTH_TOKEN: 'host-token-must-not-win', ANTHROPIC_API_KEY: 'host-key-must-not-win',
       ...(options.source === 'environment' ? {ANTHROPIC_BASE_URL: endpoint} : {}), ...options.host}});
@@ -135,14 +153,81 @@ roleBindings:[{role:'report',provider:'claude',environment:'env',commit(){return
     }
     await assertNoSecrets(data);
   };
-  return {data, fixture, requests, endpoint, source, calls, select, submit, detail, settled, safe, release: () => release?.()};
+  return {data, fixture, requests, requestPaths, endpoint, source, calls, socket, select, submit, detail, settled, safe, release: () => release?.()};
 }
+
+test('role execution bridges the selected loopback endpoint and cleans up after confirmed exit', async () => {
+  const f = await connectionFixture({bridge: true});
+  const receipt = await f.submit();
+  const detail = await f.settled(receipt);
+  expect(detail.attempts[0], JSON.stringify(await call(f.socket, {command: 'logs', id: receipt.executionId}))).toMatchObject({contract: 'valid', stopConfirmation: {kind: 'agent-exit-marker'}});
+  expect(f.requests[0]).toMatchObject({endpoint: expect.stringMatching(/^http:\/\/127\.0\.0\.2:[0-9]+\/proxy\/%2Fprefix$/), token: 'fixture-token-a', model: 'backend-a'});
+  expect(f.requestPaths).toEqual(['/proxy/%2Fprefix/report']);
+  await expect(fetch(f.requests[0].endpoint)).rejects.toThrow();
+  await f.safe([receipt]);
+}, 20000);
+
+test('cooperative cancellation keeps the bridge for the final report until exit evidence', async () => {
+  const f = await connectionFixture({bridge: true, holdFirst: true});
+  const receipt = await f.submit();
+  try {
+    await expect.poll(() => f.requests.length, {timeout: 10000}).toBe(1);
+    const cancellation = await call(f.socket, {command: 'cancel', id: receipt.executionId, reason: 'controlled cooperative stop'}) as any;
+    expect(cancellation.attempts[0].stopConfirmation).toBeUndefined();
+    await new Promise(resolve => setTimeout(resolve, 50));
+  } finally { f.release(); }
+  const detail = await f.settled(receipt, 'cancelled');
+  expect(detail.attempts[0]).toMatchObject({stopConfirmation: {kind: 'agent-exit-marker'}, report: {complete: true}});
+  expect(detail.attempts[0].output).toContain('controlled endpoint report');
+  await expect(fetch(f.requests[0].endpoint)).rejects.toThrow();
+  await f.safe([receipt]);
+}, 20000);
+
+test('missing agent exit evidence retains the bridge and container for unknown audit', async () => {
+  const f = await connectionFixture({bridge: true, missingExit: true});
+  const receipt = await f.submit();
+  const detail = await f.settled(receipt, 'unknown');
+  expect(detail.attempts[0].stopConfirmation).toBeUndefined();
+  expect(detail.attempts[0].container).toMatch(/^orch-/);
+  const {connect} = await import('node:net');
+  const endpoint = new URL(f.requests[0].endpoint);
+  const probe = connect({host: endpoint.hostname, port: Number(endpoint.port), localAddress: '127.0.0.3'});
+  probe.on('error', () => {});
+  try { await once(probe, 'connect'); } finally { probe.destroy(); }
+  expect(await readFile(f.calls, 'utf8')).not.toMatch(/"(?:stop|kill|rm)"/);
+  await f.safe([receipt]);
+}, 20000);
+
+test.each(['create', 'managed-settings'])('bridge is closed on %s failure without claiming a retained container stopped', async failure => {
+  const f = await connectionFixture({bridge: true, failCreate: failure === 'create', managedSettings: failure === 'managed-settings'});
+  const receipt = await f.submit();
+  const detail = await f.settled(receipt, 'unknown');
+  expect(detail.attempts[0].stopConfirmation).toBeUndefined();
+  expect(f.requests).toHaveLength(0);
+  const env = JSON.parse(await readFile(join(f.fixture, 'runtime.json'), 'utf8'));
+  await expect(fetch(env.ANTHROPIC_BASE_URL)).rejects.toThrow();
+  const calls = await readFile(f.calls, 'utf8');
+  expect(calls).not.toContain('ORCH_EXIT_');
+  expect(calls).not.toMatch(/"(?:stop|kill|rm)"/);
+  await f.safe([receipt]);
+}, 20000);
+
+test('loopback HTTPS fails before Docker rather than weakening TLS verification', async () => {
+  const f = await connectionFixture();
+  await writeFile(f.source, JSON.stringify({env: {ANTHROPIC_BASE_URL: 'https://localhost:443/proxy', ANTHROPIC_AUTH_TOKEN: 'fixture-token-a'}}));
+  const receipt = await f.submit();
+  const detail = await f.settled(receipt, 'start_failed');
+  expect(detail.attempts[0].error).toMatch(/TLS|SNI/);
+  expect(await readFile(f.calls, 'utf8').catch(() => '')).toBe('');
+  expect(f.requests).toHaveLength(0);
+  await f.safe([receipt]);
+}, 20000);
 
 test('role execution reads the selected live connection once per attempt and inherits its model', async () => {
   const f = await connectionFixture({holdFirst: true});
   const first = await f.submit();
   try {
-    await expect.poll(() => f.requests.length).toBe(1);
+    await expect.poll(() => f.requests.length, {timeout: 10000}).toBe(1);
     await f.select('backend-b', 'fixture-token-b');
     expect(f.requests[0]).toMatchObject({modelArgument: null, settingSources: '', model: 'backend-a', sonnet: 'backend-a-sonnet', token: 'fixture-token-a', headers: 'X-Connection: fixture-header-secret'});
     expect(f.requests[0].key).toBeUndefined(); expect(f.requests[0].unrelated).toBeUndefined();
@@ -151,6 +236,7 @@ test('role execution reads the selected live connection once per attempt and inh
   const second = await f.submit(); await f.settled(second);
   expect(f.requests).toHaveLength(2);
   expect(f.requests[1]).toMatchObject({modelArgument: null, model: 'backend-b', token: 'fixture-token-b'});
+  expect(await readFile(f.calls, 'utf8')).not.toMatch(/"(?:context|info|network|inspect)"/);
   for (const receipt of [first, second]) expect((await f.detail(receipt)).attempts[0].business).toEqual({summary: 'controlled endpoint report 中文🧪', diagnostic: '[REDACTED]'});
   await f.safe([first, second]);
 }, 30000);

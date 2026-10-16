@@ -23,6 +23,12 @@
 
 首轮全套并行运行记录为 2 failed、346 passed、21 skipped。失败是既有 connection live-read 等待与 PR-analysis partial-observation-write 断言；不将其隐去。两个文件原样定向复跑 42 项通过，未改相关测试或生产实现。最终门禁使用 `ORCHESTRATOR_REAL_DOCKER=0 ORCH_REAL_MCP=0 ORCH_REAL_CONNECTION=0 pnpm test --maxWorkers=1`，串行全套 **19 files passed / 1 skipped，350 passed / 21 skipped**，耗时 411.93 秒。串行通过说明未再复现，并不单凭重跑认定首轮失败根因。`pnpm run typecheck`、`pnpm run build` 和 `git diff --check` 通过。
 
+## 合并前集成
+
+合并前同步已合并 master `77359a04c97096d606c8315fbdcc70e04fb01308`，包含 #78 init/doctor 和 #81 执行桥。保留双方 CLI、help、README 与 tgz 消费测试；`--yes` 同时供 init/setup 使用，setup 专属选项仍拒绝用于其他命令。setup 不重写桥，只通过既有 runner 消费受支持环境的 HTTP loopback 桥，相关帮助及文档不再声称桥尚未实现。复用 master 新公开的 `contains` 路径 helper。
+
+集成定向 `pnpm test tests/setup.test.ts tests/package.test.ts` 为 22 passed；`pnpm run typecheck`、build、`git diff --check` 通过。全套 `ORCHESTRATOR_REAL_DOCKER=0 ORCH_REAL_MCP=0 ORCH_REAL_CONNECTION=0 pnpm test --maxWorkers=1 --testTimeout=20000 --expect.poll.timeout=10000` 为 **20 files passed / 1 skipped，375 passed / 21 skipped**，耗时 417.48 秒。原有九条验收中第5条的真实容器 endpoint/推荐镜像证据仍缺失，清单最多 8/9，任务须保持打开。
+
 ## 未验收
 
 未读取私人连接、运行真实 Docker/原版容器 CLI、构建推荐镜像、拉取镜像、调用真实 provider/模型、产生模型费用或发布包。推荐 recipe 使用固定 Node/CLI 版本，但基础标签和 apt 包不按 digest 固定；需在授权环境构建并记录实际 image ID。

@@ -1,8 +1,8 @@
 import { lstat, mkdir, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { basename, dirname, join, relative, resolve, sep } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { createInterface } from 'node:readline/promises';
-import { checkDataSeparation, physicalPath } from '../paths.js';
+import { checkDataSeparation, contains, physicalPath } from '../paths.js';
 import { git as projectGit } from '../execution.js';
 const defaultQuestion = '说明这个项目的主要模块及调用关系';
 const defaultImage = 'sandcastle-orchestrator-claude:2.1.296';
@@ -48,7 +48,7 @@ export async function setup(values: Record<string, unknown>) {
     const paths = {config, data: await physicalPath(resolve(String(values.data ?? join(base, 'data')))), input: await physicalPath(resolve(String(values['input-path'] ?? join(base, 'input.json')))), dockerfile: join(dirname(config), 'Dockerfile')};
     const repo = name, role = `${name}-question`;
     await checkDataSeparation(paths.data, paths.config, {version: 'setup-1', repos: [{id: repo, location: project.root}], capabilities: [], environments: []});
-    const overlaps = (a: string, b: string) => { const path = relative(a, b); return path === '' || path !== '..' && !path.startsWith(`..${sep}`) && !path.startsWith(sep); };
+    const overlaps = contains;
     const protectedPaths = [project.root, await git('rev-parse', '--path-format=absolute', '--git-common-dir'), resolve(import.meta.dirname, '../..'), join(homedir(), '.sandcastle-orchestrator', 'config'), join(homedir(), '.sandcastle-orchestrator', 'data'), join(homedir(), '.sandcastle-orchestrator', 'demo-repo')];
     for (const resource of Object.values(paths)) {
       for (const protectedPath of protectedPaths) {
@@ -69,7 +69,7 @@ export async function setup(values: Record<string, unknown>) {
     const warnings = [
       'Setup only generates resources: no service, submission, Docker, model or remote validation is run.',
       'Connection source is recorded, not read by setup; each execution loads it using the existing connection projection.',
-      'Local /login credential migration is not supported. No localhost bridge is provided here; use a container-reachable endpoint.',
+      'Local /login credential migration is not supported. Existing execution facilities bridge HTTP loopback only on verified local Linux rootful Docker bridge networks; other environments need a container-reachable endpoint. Setup does not validate reachability.',
       'Repository and Git metadata are read-only; native harness tools and temporary container writes remain available. No orchestrator tests, editing or publication tools are granted.',
       'A model report is analysis, not test evidence; completed alone does not validate a report.',
       ...(values['reference-only'] ? ['Reference only: merge into your trusted config manually before running the commands; existing configuration is never loaded or rewritten.'] : []),

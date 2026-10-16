@@ -187,8 +187,8 @@ test('setup supplies a pinned image recipe and concrete preparation commands wit
 
 test('setup-only options are rejected by other commands rather than silently ignored', async () => {
   const p = await project();
-  const result = await cli(['submit', '--yes', '--repo', 'sample', '--capability', 'sample-question', '--source', 'manual', '--input', '{}', '--socket', join(p.dir, 'missing.sock')], p.repo, p.home);
-  expect(result.code).toBe(1); expect(result.stderr).toContain('--yes is only supported for setup');
+  const result = await cli(['submit', '--question', 'not-supported', '--repo', 'sample', '--capability', 'sample-question', '--source', 'manual', '--input', '{}', '--socket', join(p.dir, 'missing.sock')], p.repo, p.home);
+  expect(result.code).toBe(1); expect(result.stderr).toContain('--question is only supported for setup');
 });
 
 test('reference-only generates merge files without creating or modifying deployment data', async () => {
