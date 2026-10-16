@@ -2,7 +2,7 @@ import { realpath, lstat } from 'node:fs/promises';
 import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 import type { Configuration } from './config.js';
 
-async function physicalPath(path: string): Promise<string> {
+export async function physicalPath(path: string): Promise<string> {
   const absolute = resolve(path);
   try { return await realpath(absolute); }
   catch (error) {

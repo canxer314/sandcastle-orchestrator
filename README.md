@@ -75,7 +75,7 @@ pnpm start resume --socket "$RESTORED_DATA/control.sock" --source operator --rea
 
 ## 提交与查询
 
-CLI 只通过 Unix socket 操作控制服务，服务不可用就失败，不直接打开数据库。所有命令输出 JSON，错误写入 stderr 并返回非零退出码。
+管理命令默认输出原 JSON。`show`、`list`、`logs`、`artifact`、`maintenance` 可显式 `--human` 查看可读结果，与 `--json` 互斥。在线查询使用 Unix socket，未指定 socket 时取所选 `--data` 内的 `control.sock`，默认 data 为 `~/.sandcastle-orchestrator/data`，不加载配置猜路径。写命令仍要求 `--socket`。显式 `--offline` 仅用于 show/list/logs，真正只读现有记录且不启动服务；详见[查询与离线查证](docs/queries.md)。
 
 ```sh
 pnpm start submit --socket /srv/orchestrator-data/control.sock \

@@ -3,10 +3,12 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
+import { RecordReader } from './record-queries.js';
 import type { Configuration, Submission } from './config.js';
 
 export class Records {
   private db: DatabaseSync;
+  private reader: RecordReader;
   private unresolved = new Map<string, string>();
   private priorAttempts = new Set<string>();
   private liveAttempts = new Set<string>();
@@ -16,6 +18,7 @@ export class Records {
 
   constructor(path: string) {
     this.db = new DatabaseSync(path);
+    this.reader = new RecordReader(this.db, {unknown:id => this.priorAttempts.has(id) || this.unresolved.has(id), error:id => this.unresolved.get(id)});
     this.db.exec(`
       PRAGMA foreign_keys = ON;
       CREATE TABLE IF NOT EXISTS maintenance (id INTEGER PRIMARY KEY CHECK (id = 1), facts TEXT NOT NULL);
@@ -166,43 +169,13 @@ export class Records {
     }
   }
 
-  show(id: string) {
-    const row = this.db.prepare(`SELECT r.*, e.id AS execution_id, e.status, m.scheduled_at, m.deduplication_key
-      FROM requests r LEFT JOIN executions e ON e.request_id = r.id
-      LEFT JOIN submission_metadata m ON m.request_id = r.id
-      WHERE e.id = ? OR r.id = ?`).get(id, id);
-    if (!row) throw new Error('Execution not found');
-    const attempts = this.db.prepare('SELECT * FROM attempts WHERE execution_id = ? ORDER BY rowid').all(String(row.execution_id)).map(a => {
-      const unknown = this.priorAttempts.has(String(a.id)) || this.unresolved.has(String(a.id));
-      const facts = JSON.parse(String(a.facts));
-      return {
-        id: a.id, configVersion: a.config_version, capability: a.capability, environment: a.environment,
-        ...facts, ...(facts.cleanup ? {logs:{...facts.logs,complete:false},...(facts.toolCalls ? {toolCalls:facts.toolCalls.map((call:Record<string,any>)=>({...call,logs:{...call.logs,complete:false}}))} : {})} : {}), runState: unknown ? 'unknown' : a.run_state,
-        ...(unknown ? { persistedRunState: a.run_state, requiresAttention: true } : {}),
-        location: {container:JSON.parse(String(a.facts)).container ?? null, processIdentity:null, reconnectHandle:null, limitation:'No harness process identity or reconnect handle; container name is evidence, not proof of stopping'},
-        ...(this.unresolved.has(String(a.id)) ? { persistenceError: this.unresolved.get(String(a.id)) } : {}),
-      };
-    });
-    const management = this.management(String(row.execution_id));
-    return {
-      request: { id: row.id, repo: row.repo, capability: row.capability, input: JSON.parse(String(row.input)), source: row.source, createdAt: row.created_at, scheduledAt: row.scheduled_at ?? null, deduplicationKey: row.deduplication_key ?? null, rejection: row.rejection },
-      execution: row.execution_id ? { id: row.execution_id, ...management, status: attempts.at(-1)?.runState === 'unknown' ? 'unknown' : row.status } : null,
-      attempts,
-    };
-  }
+  show(id: string) { return this.reader.show(id); }
 
-  list(repo?: string, status?: string, source?: string) {
-    return this.db.prepare(`SELECT e.id FROM executions e JOIN requests r ON r.id = e.request_id
-      WHERE (? IS NULL OR r.repo = ?) AND (? IS NULL OR r.source = ?) ORDER BY r.rowid`)
-      .all(repo ?? null, repo ?? null, source ?? null, source ?? null)
-      .map(row => this.show(String(row.id)))
-      .filter(detail => status === undefined || detail.execution?.status === status);
-  }
+  list(repo?: string, status?: string, source?: string) { return this.reader.list(repo, status, source); }
 
-  private management(id: string): Record<string, any> {
-    const row = this.db.prepare('SELECT facts FROM execution_management WHERE execution_id = ?').get(id);
-    return row ? JSON.parse(String(row.facts)) : {};
-  }
+  bySourceKey(source: string, key: string) { return this.reader.bySourceKey(source, key); }
+
+  private management(id: string): Record<string, any> { return this.reader.management(id); }
 
   private saveManagement(id: string, facts: object) {
     this.db.prepare('INSERT INTO execution_management VALUES (?, ?) ON CONFLICT(execution_id) DO UPDATE SET facts = excluded.facts')
