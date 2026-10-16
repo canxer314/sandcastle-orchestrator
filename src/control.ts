@@ -6,6 +6,7 @@ import { checkDataSeparation } from './paths.js';
 import { showQuery, queryEvidence } from './record-queries.js';
 import { Records } from './records.js';
 import { serviceLog } from './service-log.js';
+import { validateScheduledAt } from './submission.js';
 import type { Submission } from './config.js';
 
 export async function serve(data: string, configPath: string, maintenanceMode = 'normal') {
@@ -98,13 +99,7 @@ export async function serve(data: string, configPath: string, maintenanceMode = 
             const value = message.submission[field];
             if (value !== undefined && (typeof value !== 'string' || !value)) throw new Error(`Invalid ${field}`);
           }
-          if (message.submission.scheduledAt !== undefined) {
-            const time = message.submission.scheduledAt;
-            const format = /^\d{4}-\d{2}-\d{2}T(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)$/;
-            const calendar = new Date(`${time.slice(0, 10)}T00:00:00Z`);
-            if (!format.test(time) || !Number.isFinite(Date.parse(time))
-              || !Number.isFinite(calendar.getTime()) || calendar.toISOString().slice(0, 10) !== time.slice(0, 10)) throw new Error('Invalid scheduledAt');
-          }
+          if (message.submission.scheduledAt !== undefined) validateScheduledAt(message.submission.scheduledAt);
           const submitted = await records.submit(message.submission as Submission, config);
           result = submitted.receipt;
           dispatch();
@@ -183,21 +178,33 @@ export async function serve(data: string, configPath: string, maintenanceMode = 
   process.once('SIGINT', shutdown);
 }
 
+export class ControlCallError extends Error {
+  constructor(message: string, readonly sent: boolean, readonly rejected = false) { super(message); }
+}
+
 export function call(socket: string, message: unknown, signal?: AbortSignal): Promise<unknown> {
   return new Promise((resolve, reject) => {
+    let sent = false;
+    const failed = (error: Error) => reject(new ControlCallError(error.message, sent));
     const req = request({ socketPath: socket, path: '/', method: 'POST', signal }, res => {
       let body = '';
-      res.on('error', reject);
+      res.on('error', failed);
       res.on('data', chunk => { body += chunk; });
       res.on('end', () => {
         try {
           const result = JSON.parse(body);
-          if (res.statusCode !== 200) reject(new Error(result.error));
+          if (res.statusCode !== 200) reject(new ControlCallError(result.error, sent, true));
           else resolve(result);
-        } catch (error) { reject(error); }
+        } catch (error) { failed(error as Error); }
       });
     });
-    req.on('error', reject);
+    req.once('socket', socket => {
+      // Once connected, a write may escape before its local finish event.
+      if (socket.connecting) socket.once('connect', () => { sent = true; });
+      else sent = true;
+    });
+    req.once('finish', () => { sent = true; });
+    req.on('error', failed);
     req.end(JSON.stringify(message));
   });
 }

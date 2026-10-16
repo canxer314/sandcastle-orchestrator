@@ -8,6 +8,24 @@ export function queryCommand(command: string, context: Context, selectors: Recor
   return `sandcastle-orchestrator ${command}${target}${context.data ? ` --data ${quote(context.data)}` : ''}${context.socket ? ` --socket ${quote(context.socket)}` : ''}${context.offline ? ' --offline' : ''} --human${options}`;
 }
 
+export function writeRecheck(command: string, context: Context) {
+  return queryCommand(command === 'submit' || context.id ? 'show' : command === 'cleanup' ? 'list' : 'maintenance', context);
+}
+
+export function formatWrite(command: string, result: any, context: Context): string {
+  if (command === 'submit') {
+    const id = result.executionId ?? result.requestId;
+    return [`Acceptance: ${result.accepted ? 'accepted' : 'rejected'}. Acceptance is not execution success.`,
+      `Request: ${result.requestId}`, `Execution: ${result.executionId ?? 'none'}`,
+      ...(result.reason !== undefined ? [`Reason: ${result.reason}`] : []),
+      `Inspect: ${queryCommand('show', {...context, id})}`].join('\n');
+  }
+  const next = writeRecheck(command, context);
+  return [`Operation: ${command}. Receipt confirmed; this is not execution success.`,
+    ...(command === 'cancel' ? ['Cancellation request accepted; this does not prove execution stopped.'] : []),
+    `Receipt:\n${json(result)}`, `Inspect: ${next}`].join('\n');
+}
+
 export function formatQuery(command: string, result: any, context: Context): string {
   const lines: string[] = [];
   if (context.offline) lines.push('Offline: persisted evidence only; current activity is unverified.');
