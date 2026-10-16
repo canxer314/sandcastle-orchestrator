@@ -5,6 +5,8 @@ import { mkdtemp, mkdir, readFile, readdir, rm, stat, symlink, unlink, writeFile
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterAll, beforeAll, expect, test } from 'vitest';
+import { Client } from '@modelcontextprotocol/client';
+import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
 
 const exec = promisify(execFile);
 const root = resolve(import.meta.dirname, '..');
@@ -411,6 +413,131 @@ exit 1
   await stop(child);
 }, 30_000);
 
+test('readonly tutorial works as a package consumer through submit, show and report artifacts', async () => {
+  const project = join(directory, 'readonly-tutorial');
+  const checkout = join(directory, 'tutorial-checkout');
+  const data = join(directory, 'tutorial-data');
+  await mkdir(project); await mkdir(checkout);
+  await writeFile(join(project, 'package.json'), '{"private":true,"type":"module"}');
+  await exec('npm', ['install', '--no-audit', '--no-fund', join(directory, packed.filename), '@ai-hero/sandcastle@0.12.0', 'zod@4.6.5', 'typescript@5.9.3', '@types/node@24.19.1'], {cwd:project, timeout:180_000});
+  await writeFile(join(project, 'config.ts'), await readFile(join(root, 'examples/readonly-role/config.ts')));
+  await writeFile(join(project, 'composition.ts'), await readFile(join(root, 'examples/readonly-role/composition.ts')));
+  await exec('git', ['init', checkout], {cwd});
+  await writeFile(join(checkout, 'README.md'), '# Authorized fixture\n');
+  await exec('git', ['-C', checkout, 'add', '.'], {cwd});
+  await exec('git', ['-C', checkout, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-m', 'fixture'], {cwd});
+  const git = async (...args: string[]) => (await exec('git', ['-C', checkout, ...args], {cwd})).stdout;
+  const sha = (await git('rev-parse', 'HEAD')).trim();
+  const before = await git('status', '--porcelain=v1', '--untracked-files=all');
+  const report = {summary:'The fixture has a README.', evidence:['README.md:1'], limitations:['Controlled adapter, not a model conclusion.']};
+  const docker = join(project, 'docker');
+  const calls = join(project, 'docker-calls');
+  const gate = join(project, 'tool-gate');
+  const release = join(project, 'tool-release');
+  await writeFile(docker, `#!/bin/sh
+printf '%s\\n' "$*" >> ${JSON.stringify(calls)}
+case "$1" in
+run) case "$*" in *--detach*) echo controlled-container;; *) echo '["README.md"]';; esac;;
+exec) case "$*" in
+*ORCH_EXIT_*) if [ -f ${JSON.stringify(gate)} ]; then while [ ! -f ${JSON.stringify(release)} ]; do sleep 0.02; done; fi; marker=$(printf '%s' "$*" | grep -o 'ORCH_EXIT_[a-f0-9]*' | head -1); printf '%s\\n%s:0\\n' '${JSON.stringify(report)}' "$marker";;
+*rev-parse*) echo ${sha};;
+esac;;
+inspect) echo '{"Running":false,"Status":"exited","ExitCode":0}';;
+esac
+`, {mode:0o700});
+  // Only the provider and Docker facility are controlled; the tutorial role is unchanged.
+  const wrapper = join(project, 'controlled.ts');
+  await writeFile(wrapper, `
+    Object.assign(process.env, {
+      TUTORIAL_REPO:${JSON.stringify(checkout)}, TUTORIAL_IMAGE:'controlled:image',
+      TUTORIAL_MODEL:'controlled-model', TUTORIAL_CONNECTION:${JSON.stringify(join(project, 'not-read.json'))},
+      TUTORIAL_CONFIG_VERSION:'tutorial-consumer'
+    });
+    const {default: config} = await import('./config.js');
+    config.environments[0]!.docker = {...config.environments[0]!.docker!, binary:${JSON.stringify(docker)}, network:'none'};
+    config.providers![0]!.agent = {name:'controlled', env:{}, captureSessions:false,
+      buildPrintCommand(){return {command:'controlled-agent'};},
+      parseStreamLine(line: string){return [{type:'result', result:line}];}
+    };
+    delete config.providers![0]!.connection;
+    export default config;
+  `);
+  await exec(process.execPath, [join(project, 'node_modules/typescript/bin/tsc'), '--noEmit', '--strict', '--skipLibCheck', '--module', 'NodeNext', '--target', 'ES2023', join(project, 'config.ts'), join(project, 'composition.ts'), wrapper], {cwd:project});
+  const child = await start(wrapper, data);
+  const socket = join(data, 'control.sock');
+  const cli = async (...args: string[]) => JSON.parse((await exec(bin, [...args, '--socket', socket], {cwd})).stdout);
+  const submit = (input: unknown) => cli('submit', '--repo', 'tutorial', '--capability', 'repository-question', '--input', JSON.stringify(input), '--source', 'tutorial-test');
+  expect(await submit({sha:'HEAD', question:'What is here?'})).toMatchObject({accepted:false});
+  expect(await submit({sha, question:''})).toMatchObject({accepted:false});
+  expect(await submit({sha, question:'What is here?', command:'publish'})).toMatchObject({accepted:false});
+  const receipt = await submit({sha, question:'What is here?'});
+  expect(receipt.accepted).toBe(true);
+  await expect.poll(() => cli('show', receipt.executionId), {timeout:15_000}).toMatchObject({
+    request:{repo:'tutorial', capability:'repository-question', input:{sha, question:'What is here?'}},
+    execution:{status:'completed'}, attempts:[{
+      kind:'agent', actualSha:sha, workspaceMode:'readonly', configVersion:'tutorial-consumer',
+      provider:'question-provider', runState:'completed', exitCode:0, contract:'valid', business:report,
+    }],
+  });
+  const artifact = await cli('artifact', receipt.executionId, '--name', 'report.txt');
+  expect(artifact).toMatchObject({availability:'available', actualSha:sha, encoding:'base64'});
+  expect(JSON.parse(Buffer.from(artifact.content, 'base64').toString())).toEqual(report);
+  expect(await cli('logs', receipt.executionId)).toMatchObject({complete:true});
+  const commands = await readFile(calls, 'utf8');
+  expect(commands).toContain('--read-only');
+  expect(commands).toContain(',readonly');
+  expect(commands).toContain('--network none');
+  expect(commands).not.toContain('dst=/implementation');
+  expect((await git('rev-parse', 'HEAD')).trim()).toBe(sha);
+  expect(await git('status', '--porcelain=v1', '--untracked-files=all')).toBe(before);
+  expect(await readFile(join(checkout, 'README.md'), 'utf8')).toBe('# Authorized fixture\n');
+  await stop(child);
+
+  const composed = join(project, 'controlled-composition.ts');
+  await writeFile(composed, `import './controlled.js'; export {default} from './composition.js';`);
+  const composedChild = await start(composed, data, `${project}:${process.env.PATH}`);
+  expect(await cli('submit', '--repo', 'tutorial', '--capability', 'list-root', '--input', '{"command":"publish"}', '--source', 'tutorial-test')).toMatchObject({accepted:false});
+  const listing = await cli('submit', '--repo', 'tutorial', '--capability', 'list-root', '--input', JSON.stringify(sha), '--source', 'tutorial-test');
+  expect(listing.accepted).toBe(true);
+  await expect.poll(() => cli('show', listing.executionId), {timeout:15_000}).toMatchObject({
+    execution:{status:'completed'}, attempts:[{actualSha:sha, contract:'valid', business:{actualSha:sha, entries:['README.md']}}],
+  });
+  await writeFile(gate, 'wait for controlled tool call');
+  const composedReceipt = await submit({sha, question:'What is here?'});
+  expect(composedReceipt.accepted).toBe(true);
+  let detail: any;
+  await expect.poll(async () => {
+    detail = await cli('show', composedReceipt.executionId);
+    return detail.attempts[0]?.mcpDirectory;
+  }, {timeout:15_000}).toBeTruthy();
+  await expect.poll(() => readFile(calls, 'utf8'), {timeout:15_000}).toContain("--mcp-config '/orchestrator-mcp/config.json'");
+  const client = new Client({name:'tutorial-controlled-harness', version:'1'});
+  try {
+    await client.connect(new StdioClientTransport({command:process.execPath, args:[
+      join(detail.attempts[0].mcpDirectory, 'bridge.cjs'),
+      join(detail.attempts[0].mcpDirectory, 'tools.sock'),
+    ]}));
+    expect((await client.listTools()).tools.map(tool => tool.name)).toContain('list_root');
+    const result = await client.callTool({name:'list_root', arguments:{}}) as any;
+    expect(result.isError).not.toBe(true);
+    expect(JSON.parse(result.content[0].text)).toMatchObject({
+      runState:'completed', contract:'valid', actualSha:sha,
+      business:{actualSha:sha, entries:['README.md']},
+    });
+  } finally {
+    await client.close();
+    await writeFile(release, 'tool completed');
+  }
+  await expect.poll(() => cli('show', composedReceipt.executionId), {timeout:15_000}).toMatchObject({
+    execution:{status:'completed'}, attempts:[{actualSha:sha, contract:'valid', business:report, toolCalls:[{
+      id:'1', tool:'list_root', capability:'list-root', actualSha:sha, runState:'completed', contract:'valid',
+    }]}],
+  });
+  expect(await cli('logs', composedReceipt.executionId, '--call', '1')).toMatchObject({complete:true, stdout:'["README.md"]\n'});
+  const composedReport = await cli('artifact', composedReceipt.executionId, '--name', 'report.txt');
+  expect(JSON.parse(Buffer.from(composedReport.content, 'base64').toString())).toEqual(report);
+  await stop(composedChild);
+}, 240_000);
 
 test('installed setup generates consumable external config with inherited model and explicit file submission', async () => {
   const repo = join(directory, 'setup-project'); const home = join(directory, 'setup-home');
