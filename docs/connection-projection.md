@@ -51,7 +51,21 @@ CC-Switch 代理只作为 client-facing endpoint。协议转换、动态路由�
 
 这是防止已知连接秘密意外回显，不是通用 DLP：无法识别模型主动改写、拆分编码的任意秘密，也不清洗用户原有文件、业务仓库或外部 MCP 服务自行保存的内容。不要把认证放进任务输入、角色说明、工具参数或自定义 provider 命令。可信配置代码和镜像仍有权限看到运行时认证；容器进程和获授权 Docker 管理者也可看到，Docker CLI 子进程环境亦可能被有权限的宿主进程检查；Docker 保留容器的 Config.Env 可能持续保留值，管理员核查后负责清理。不承诺完全凭据隔离。
 
-保持只读 repo、权限、目录分离、不挂宿主 home/Docker socket、host 网络禁令和 unknown 审计。允许角色显式使用普通 Docker bridge 出网，不要求新增网络治理设施；确定性测试路径继续禁网。localhost endpoint 不会自动桥接或改写，宿主 loopback 通常不能从容器访问。本票只处理已有容器可达 endpoint。
+保持只读 repo、权限、目录分离、不挂宿主 home/Docker socket、host 网络禁令和 unknown 审计。允许角色显式使用普通 Docker bridge 出网，不要求新增网络治理设施；确定性测试路径继续禁网。
+
+## 执行级 localhost 桥（#81）
+
+无需新命令或配置字段。沿用上面的授权来源和现有 role 执行入口，将对应 `docker.network` 明确配置为 `bridge` 或已有本机 bridge network。省略网络仍是 `none`，不会自动切换。没有显式 `connection` 的旧 provider 不变；所选 endpoint 不属于 loopback 时原样使用，不做 Docker 桥探测或创建 relay。省略 endpoint 仍沿用 harness 默认值。
+
+自动桥只支持 HTTP 的 `localhost`、`localhost.`、`127/8`、`::1` 及 IPv4-mapped loopback。localhost 解析结果必须全部是 loopback，本次固定这些地址，不在转发中重新解析。执行设施使用与容器相同的 Docker CLI 环境，核验 Linux、root-owned 本机 Unix socket、非 rootless/非 Desktop daemon、local bridge network，以及 gateway 在对应本机 bridge 网卡上。网络创建后使用完整 network ID；监听实际 gateway 的随机临时端口，核对实际绑定结果，绝不监听 `0.0.0.0`。不创建网络、不改防火墙、不提权、不切 host 网络、不注入 Docker socket，也不要求修改代理 listener。
+
+relay 在容器创建前 ready，默认不放行任何来源。容器创建后以返回的完整 ID 核验 running 状态、单一 bridge 附着、实际 IP 和 gateway，完成后才启动 harness。每个新连接还需复核原 ID 和 network 的 IP 归属，其他来源直接关闭；最多 8 个并行身份核验、64 个客户端连接，Docker 探测每条命令限 5 秒。它限制普通容器访问和 IP 回收，不是抵抗 Docker 管理者或特权网络伪造的认证。
+
+仅覆盖本次容器 `ANTHROPIC_BASE_URL` 的 host/port，保留 HTTP 协议和 URL 路径，认证、headers、模型和上游路由仍来自 #80 投影。Node TCP 双向 `pipe` 保留背压和半关闭，不解析或记录请求、认证及响应正文。客户端由新 URL 生成的 HTTP Host 会变为 gateway/临时端口；要求原 Host、依赖绝对 loopback redirect 的代理不在透明兼容范围内，不用解析 HTTP 来补写。HTTPS loopback 明确报 TLS/SNI 不支持，必须另选容器可达且证书有效的 endpoint；不会降级为 HTTP、关闭证书验证或自动搬运 CA/mTLS。
+
+启动失败关闭本票 relay 和所有已接入 socket，不借此声称保留容器已停止。协作 cancel 不断桥，最终报告可继续传输；收到现有 Agent exit marker 后立即关闭桥，不等 SDK session 后处理。没有退出证据时保留桥与 unknown，不删除容器证据，不把 Docker client 结束当成 Agent 停止。桥属于当前控制进程，不是持久化代理；控制服务退出会使连接中断，重启不恢复旧桥，也不证明旧 Agent 停止。维护时先确认执行退出或完成既有人工核对，不能停服务来制造安全停止。
+
+远程 Docker、rootless、Docker Desktop、非 bridge、IPv4 gateway 无法核验或本机 bridge 不匹配均明确失败。可以由用户明确选择已经容器可达的 endpoint，程序不会自动尝试另一身份或网络模式。
 
 ## 验证范围
 
@@ -59,6 +73,8 @@ CC-Switch 代理只作为 client-facing endpoint。协议转换、动态路由�
 
 2026-10-16 在另行授权后，以真实 Docker 和原版 Claude Code 2.1.296 完成合成凭据、受控 Messages endpoint 的三次执行，覆盖 live 切换、模型继承/显式 override、容器来源、报告/session 秘密过滤及退出核对。独立命令和证据见 [#80 Docker 验收记录](issue-80-docker-acceptance.md)。`ORCH_REAL_CONNECTION=1 pnpm test tests/real-connection.test.ts` 仅在授权本机 Linux Docker 环境显式运行，默认跳过；需要记录中固定的预部署镜像，不下载或改用其他镜像。测试创建专用 internal network，不使用私人连接或真实模型；如默认地址池耗尽，可由操作者用 `ORCH_CONNECTION_SUBNET` 指定已核对无冲突的小子网。
 
-真实 provider、私人连接、代理路由、localhost 桥及其他镜像/CLI 版本仍未据此验收。历史 #19/#23 特定环境成功记录不替代本增量验收。
+`tests/localhost-bridge.test.ts` 以受控宿主/Docker 身份和真实本地 TCP socket 验证 gateway/临时端口、来源限制、授权前拒绝、原 ID 停止后拒绝、opaque bytes、FIN 后响应、双向 32 MiB 慢速传输背压及上游失败。`tests/connection.test.ts` 经控制入口和现有 role/provider 验证自动桥接、路径、启动失败清理、协作 cancel 最后报告、退出清理、unknown 保留和已知秘密过滤。受控 host 网卡/sysfs、Docker CLI 与 harness 不是实际容器，不能冒充真实 Docker 网络证据。
+
+本次 #81 未运行真实 Docker、私人代理、真实模型或费用验收。真实 provider、私人连接、代理路由、localhost 桥及其他镜像/CLI 版本仍未据此验收。历史 #19/#23 特定环境成功记录和 #80 容器可达 endpoint 验收不替代本增量自动桥验收。
 
 依据为 Claude Code 官方 [env vars](https://code.claude.com/docs/en/env-vars)、[model config](https://code.claude.com/docs/en/model-config)、[gateway protocol](https://code.claude.com/docs/en/llm-gateway-protocol)、[settings reference](https://code.claude.com/docs/en/settings-reference)，以及 [#60 Resolution](https://github.com/canxer314/sandcastle-orchestrator/issues/60#issuecomment-6173989789) 和 [#63 Resolution](https://github.com/canxer314/sandcastle-orchestrator/issues/63#issuecomment-6173205958)。

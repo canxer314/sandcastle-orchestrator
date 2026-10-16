@@ -1,7 +1,17 @@
 // Controlled CLI fixture, not Claude Code. Calls only the test-owned local endpoint.
 const args = process.argv.slice(2);
 const env = process.env;
-const response = await fetch(`${env.ANTHROPIC_BASE_URL}/report`, {
+const endpoint = new URL(env.ANTHROPIC_BASE_URL!);
+if (endpoint.hostname === 'container.fixture') endpoint.hostname = '127.0.0.1';
+const response = await (endpoint.hostname === '127.0.0.2' ? async (url: string, options: RequestInit) => {
+  const {request} = await import('node:http');
+  return new Promise<{text(): Promise<string>}>((resolve, reject) => {
+    const req = request(url, {method: options.method, headers: options.headers as Record<string, string>, localAddress: '127.0.0.3'}, res => {
+      let body = ''; res.on('data', chunk => {body += chunk;}); res.on('end', () => resolve({text: async () => body}));
+    });
+    req.on('error', reject); req.end(options.body);
+  });
+} : fetch)(`${endpoint.href.replace(/\/$/, '')}/report`, {
   method: 'POST',
   headers: {'content-type': 'application/json'},
   body: JSON.stringify({
@@ -14,6 +24,7 @@ const response = await fetch(`${env.ANTHROPIC_BASE_URL}/report`, {
     headers: env.ANTHROPIC_CUSTOM_HEADERS || undefined,
     unrelated: env.ANTHROPIC_NOT_A_CONNECTION_FIELD || undefined,
     home: env.HOME,
+    endpoint: env.ANTHROPIC_BASE_URL,
   }),
 });
 let prompt = ''; for await (const chunk of process.stdin) prompt += chunk;

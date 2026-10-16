@@ -165,7 +165,7 @@ const providers = [{
 }];
 ```
 
-投影只支持容器可达的 Anthropic Messages-compatible client endpoint 和静态 API key 或 Bearer token，不限定模型厂商。没有自动 localhost 桥，不改宿主执行、不新增认证方式。普通角色可显式配置 `docker.network: 'bridge'` 出网；历史 PR 分析示例的 endpoint-only 网络要求限于其当时受控部署，不是通用接入新门槛。host 网络禁令、确定性测试禁网、路径/权限及 unknown 人工核对边界不变。
+投影支持 Anthropic Messages-compatible client endpoint 和静态 API key 或 Bearer token，不限定模型厂商。显式容器可达 endpoint 原样使用；#81 为所选 HTTP loopback endpoint 增加本次执行所有的 TCP 桥，仅支持能核验 gateway 的本机 Linux rootful Docker bridge。HTTPS loopback 的 TLS/SNI 改写明确不支持，不关闭证书校验；详见[桥接范围与验收](docs/connection-projection.md#执行级-localhost-桥81)。不改宿主执行、不新增认证方式。普通角色可显式配置 `docker.network: 'bridge'` 出网；历史 PR 分析示例的 endpoint-only 网络要求限于其当时受控部署，不是通用接入新门槛。host 网络禁令、确定性测试禁网、路径/权限及 unknown 人工核对边界不变。
 
 受控测试验证 live 切换、模型参数、冲突/不支持依赖失败、日志/报告/session 秘密过滤。2026-10-16 已获准用真实 Docker、原版 Claude Code 2.1.296 和合成凭据完成受控 Messages endpoint 验收，见 [#80 Docker 验收记录](docs/issue-80-docker-acceptance.md)。未读取私人连接或调用真实模型；真实 provider、代理和 localhost 桥仍未据此验收。
 
