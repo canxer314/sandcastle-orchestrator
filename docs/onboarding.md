@@ -1,5 +1,7 @@
 # 演示初始化与环境检查
 
+本页只处理不调用模型的演示测试。自己的项目请按[主教程](user-guide.md)分析，不必把 demo 配置改成 Agent 配置。
+
 本阶段提供 `init` 和 `doctor`。检查完成后可显式运行 `demo`，重置使用 `init --reset-demo`，详见[演示测试与重置](demo.md)。真实项目入口见 [setup 指南](setup.md)。不要把环境检查通过当成测试已经执行。安装仍见[安装说明](installation.md)，0.1.0 已发布，正式渠道证据见[发布验收](https://github.com/canxer314/sandcastle-orchestrator/blob/master/docs/issue-86-release-acceptance.md)。
 
 ```sh

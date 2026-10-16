@@ -1,20 +1,20 @@
 # 提交与可靠回执
 
-源码入口是 `pnpm start`，本地 tgz 安装后使用 `sandcastle-orchestrator`。npm/Release 仍未发布。以下命令使用已配置的 repo、capability 或 role ID，不从 cwd 或唯一配置猜目标。repo ID 不是 checkout 路径，source 是来源标识，不是认证身份，不能放凭据。
+0.1.0 已发布，安装用户直接使用 `sandcastle-orchestrator`，不需要源码或 pnpm。第一次只读分析请按[主教程](user-guide.md)操作。以下命令使用已配置的 repo、capability 或 role ID，不从 cwd 或唯一配置猜目标。repo ID 不是 checkout 路径，source 是来源标识，不是认证身份，不能放凭据。
 
 ## JSON 参数、文件或 stdin
 
 三种输入任选一种，只解析 JSON，不执行文件。不新增通用 `--sha`，输入 schema 和固定版本选择由 capability/role 负责。
 
 ```sh
-pnpm start submit --data /srv/orchestrator-data --human \
+sandcastle-orchestrator submit --data /srv/orchestrator-data --human \
   --repo example --capability test-commit --source manual \
   --input '"0123456789012345678901234567890123456789"'
 
-pnpm start submit --data /srv/orchestrator-data --human \
+sandcastle-orchestrator submit --data /srv/orchestrator-data --human \
   --repo example --capability test-commit --source manual --input-file input.json
 
-cat input.json | pnpm start submit --data /srv/orchestrator-data --human \
+cat input.json | sandcastle-orchestrator submit --data /srv/orchestrator-data --human \
   --repo example --capability test-commit --source manual --input-file -
 ```
 
@@ -47,24 +47,24 @@ human 写操作最多等待 30 秒，包括持续接收响应的时间，只限�
 submit 回执丢失时，使用发送前保存的 source/key 和原实例，只读核对全部请求。用实际值替换占位符：
 
 ```sh
-pnpm start show --source SOURCE --deduplication-key KEY --data /srv/orchestrator-data --human
-pnpm start show --source SOURCE --deduplication-key KEY --data /srv/orchestrator-data --offline --human
+sandcastle-orchestrator show --source SOURCE --deduplication-key KEY --data /srv/orchestrator-data --human
+sandcastle-orchestrator show --source SOURCE --deduplication-key KEY --data /srv/orchestrator-data --offline --human
 ```
 
 source/key 查证会包含拒绝与接纳记录。没有匹配只表示尚未查到记录，不证明可以安全重发。离线命令必须使用已知对应的 data，不能从任意自定义 socket 位置猜 data，也不能携带 `--socket`。不要只为查记录而启动可能调度历史任务的服务。保留现场，按实际进程、容器及外部副作用人工核对。
 
 ## 其他管理写命令
 
-`cancel`、`confirm-stop`、`resolve`、`retry`、`cleanup`、`pause`、`resume`、`restore-review` 均支持 `--human`，与 submit 使用相同的客户端等待及退出码规则。原审计字段、人工停止确认和恢复限制不变。每个命令的必填字段见 `pnpm start COMMAND --help`。
+`cancel`、`confirm-stop`、`resolve`、`retry`、`cleanup`、`pause`、`resume`、`restore-review` 均支持 `--human`，与 submit 使用相同的客户端等待及退出码规则。原审计字段、人工停止确认和恢复限制不变。每个命令的必填字段见 `sandcastle-orchestrator COMMAND --help`。
 
 ```sh
-pnpm start cancel EXECUTION_ID --data /srv/orchestrator-data --human --reason 'operator requested stop'
-pnpm start pause --data /srv/orchestrator-data --human --source operator --reason 'backup window'
-pnpm start cleanup --data /srv/orchestrator-data --human
+sandcastle-orchestrator cancel EXECUTION_ID --data /srv/orchestrator-data --human --reason 'operator requested stop'
+sandcastle-orchestrator pause --data /srv/orchestrator-data --human --source operator --reason 'backup window'
+sandcastle-orchestrator cleanup --data /srv/orchestrator-data --human
 ```
 
 cancel 回执只证明取消请求已接纳，不证明执行已停止。confirm-stop 只记录人工独立核对结果，不负责停止进程；resolve/retry 仍要求停止证据和外部结果审查，retry 不等于恢复旧工具位置。pause 不停止已有执行，restore-review 不自动 resume。cleanup 回执保留每项清理状态和原因，不能把 partial 或 unknown 当作全部清理成功。
 
 无提交 source/key 的管理写操作不虚构 key。回执未确认时，按已知 ID 给 show 指引；pause/resume/restore-review 给 maintenance，cleanup 给 list，均保留同实例选择。cleanup 的 list 仅用于定位执行，需再查 show/logs 的实际证据与清理状态。
 
-本增量使用真实 CLI 子进程、Unix socket、控制服务和受控故障响应测试；不改变持久化记录或 socket 协议。正式 tgz 交叉验收留给集成阶段。真实 Docker、真实模型、私人连接及生产外部写入均未在本增量验收，不以受控测试代替。
+提交回执只证明受理结果，不证明 Docker、模型或外部写入成功。受控 CLI/socket 测试不替代真实 provider 验证；结果与停止证据须用实际编号继续核对。
