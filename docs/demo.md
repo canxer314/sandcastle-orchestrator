@@ -1,5 +1,7 @@
 # 演示测试与重置
 
+本页只处理不调用模型的演示测试。自己的项目请按[主教程](user-guide.md)分析，不必把 demo 配置改成 Agent 配置。
+
 `demo` 使用 `init` 创建的配置、data 和演示 Git 仓库，启动本次专属控制服务，经 Unix socket 提交一次 deterministic Docker 测试，然后等待结果并结束本次服务。不需要模型账号，不自动拉镜像。先按[初始化说明](onboarding.md)准备资源并运行 `doctor`。
 
 ```sh

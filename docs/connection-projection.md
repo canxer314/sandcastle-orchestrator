@@ -1,11 +1,11 @@
 # 执行级授权连接投影
 
-此入口供已有可信 TypeScript 配置使用，不依赖 setup、安装包或 localhost 桥。继续通过现有 `serve`、CLI/socket `submit --capability ROLE_ID` 和 role/provider 执行，不新增命令。
+首次连接先按[主教程](user-guide.md)操作。本页供可信配置维护者查阅，示例从配置自己的已安装依赖导入公开 API。继续通过现有 `serve`、CLI/socket `submit --capability ROLE_ID` 和 role/provider 执行，不新增命令。
 
 ## 选择来源
 
 ```ts
-import { claudeCode } from '/absolute/source/src/connection.js';
+import { claudeCode } from '@canxer314/sandcastle-orchestrator';
 
 // 放入既有 Configuration.providers，保留角色、绑定、repo 和环境定义。
 const providers = [{

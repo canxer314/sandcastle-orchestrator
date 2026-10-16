@@ -303,8 +303,8 @@ test('external attention query uses CLI JSON, exposes minimal fields and fails v
 test.each(['empty','items','invalid','missing-jq','missing-channel'])('documented notification bridge handles %s without silently swallowing errors', async mode => {
   const f = await fixture();
   const {readFile} = await import('node:fs/promises');
-  const readme = await readFile(join(root,'README.md'),'utf8');
-  const snippet = readme.slice(readme.indexOf('umask 077\nsummary=$(mktemp)')).split('```')[0];
+  const guide = await readFile(join(root,'docs/deployment-guide.md'),'utf8');
+  const snippet = guide.slice(guide.indexOf('umask 077\nsummary=$(mktemp)')).split('```')[0];
   const bin = join(f.dir,'bin'); await mkdir(bin);
   const marker = join(f.dir,'notified');
   await writeFile(join(bin,'node'), '#!/bin/sh\nprintf "%s\\n" \'{"version":1,"available":true,"items":[]}\'\n', {mode:0o700});

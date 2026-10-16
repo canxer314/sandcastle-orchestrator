@@ -1,12 +1,14 @@
 # 新增只读角色与组合任务
 
+首次使用请完成[主教程](user-guide.md)。本页供需要自定义业务报告或工具的配置维护者查阅，不是首次分析的前置步骤。
+
 本教程从包外可信配置开始，新增 `repository-question` role，在获准的小型 Git 仓库的固定 commit 上回答问题，再查询本地报告。完整文件是 [config.ts](../examples/readonly-role/config.ts)，可选组合在 [composition.ts](../examples/readonly-role/composition.ts)。它们只 import 正式包和已安装依赖，不依赖内部源码。
 
-这里使用已交付的 `serve`、`submit --input`、`show`、`logs` 和 `artifact`。不需要 setup 生成器，不引入 workflow DSL、条件分支或自动多角色串联。原有 [Issue 到 Draft PR](user-guide.md)、[部署与运维](deployment-guide.md) 和 README 中的 implementation、Draft PR、PR analysis 仍是需要单独配置、权限和验收的高级用法。本教程不授予修改或发布权限，也不扩大历史真实验收的适用范围。
+这里使用已交付的 `serve`、`submit --input`、`show`、`logs` 和 `artifact`。不需要 setup 生成器，不引入 workflow DSL、条件分支或自动多角色串联。原有 [Issue 到 Draft PR](deployment-guide.md#高级用法issue-到-draft-pr)、[部署与运维](deployment-guide.md) 和管理员参考中的 implementation、Draft PR、PR analysis 仍是需要单独配置、权限和验收的高级用法。本教程不授予修改或发布权限，也不扩大历史真实验收的适用范围。
 
 ## 1. 准备独立资源和执行条件
 
-需要 Linux、Node.js 24+、npm、Git、util-linux `flock`，以及已安装的正式 CLI。当前尚未发布 npm/Release，先按[安装说明](installation.md)安装维护者交付的本地 tgz。安装消费者不需要源码或 pnpm。下面以同一份已验收 tgz 为配置依赖，不能用全局 CLI 的 node_modules 代替配置自己的依赖。
+需要 Linux、Node.js 24+、npm、Git、util-linux `flock`，以及已安装的正式 CLI。0.1.0 已发布到 npm/Release，先按[安装说明](installation.md)安装。下面需本地 tgz 的配置示例可使用同版本 Release 附件。安装消费者不需要源码或 pnpm。下面以同一份已验收 tgz 为配置依赖，不能用全局 CLI 的 node_modules 代替配置自己的依赖。
 
 真实运行还要求管理员准备并授权以下资源。缺一项就先停在类型检查，不要把配置加载成功当成模型连接成功。
 
@@ -137,7 +139,7 @@ sandcastle-orchestrator artifact "$EXECUTION_ID" --socket "$DATA/control.sock" -
 
 默认产物读取上限是 8 MiB；更大的报告用同一命令加 `--offset 0`，按 `nextOffset` 逐块读取，直到 `complete:true`，不要把首块当完整报告。日志只返回末尾最多 64 KiB，检查 `truncated` 与 `complete`；缺失或清理后的证据不是空报告或成功。
 
-停止服务前先核对所有执行及工具。服务终端的 Ctrl+C 不是任务停止保证；不要直接据此清理 data、容器或凭据。保留证据，按 README 的维护流程操作。
+停止服务前先核对所有执行及工具。服务终端的 Ctrl+C 不是任务停止保证；不要直接据此清理 data、容器或凭据。保留证据，按[管理员参考](deployment-guide.md#维护窗口备份与恢复)操作。
 
 ## 5. 用现有能力组合任务
 
