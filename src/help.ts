@@ -64,6 +64,22 @@ Example: sandcastle-orchestrator maintenance --data /srv/orchestrator-data --hum
 --handling TEXT --external-results TEXT
 Record manual backup/side-effect review while admission and starts are paused. Does not resume.
 Example: sandcastle-orchestrator restore-review --socket /srv/orchestrator-data/control.sock --source operator --reason 'audit compared' --backup-point '2026-10-11T00:00:00Z' --handling 'stale queue cancelled' --external-results 'host and remote audit checked'`,
+  init: `init [--config FILE] [--data DIR] [--demo-repo DIR] [--yes] [--human | --json]
+Create separate demo configuration (explicit ESM, new template requires .ts or .mts), runtime data and a committed deterministic Git repo.
+Defaults: ~/.sandcastle-orchestrator/{config/config.ts,data,demo-repo}. Relative paths use cwd.
+Displays creation paths before confirmation. Noninteractive and JSON writes require --yes.
+Complete resources are reused without writing; conflicts/incomplete resources are preserved, never repaired.
+--yes only skips confirmation, never path/configuration protection. No --reset-demo is available.
+No dependencies are installed, images pulled, services started or models called.
+Example: sandcastle-orchestrator init --yes`,
+  doctor: `doctor [--config FILE] [--data DIR] [--demo-repo DIR] [--human | --json]
+Check Linux, Node.js 24+, Git, Docker daemon, flock, images and selected resources, even before init.
+Defaults: ~/.sandcastle-orchestrator/{config/config.ts,data,demo-repo}. Relative paths use cwd.
+An existing data/init.json locates resources; explicit paths must match physically (symlinks accepted).
+Displays trusted config before loading it: TypeScript loading executes host code and is not side-effect-free.
+Checks never install/fix dependencies, pull images, authenticate remotely or call a model.
+Image presence does not verify credentials. demo is not available in this increment.
+Example: sandcastle-orchestrator doctor --data ~/.sandcastle-orchestrator/data`,
 };
 
 export const commands = Object.keys(commandHelp);
@@ -80,7 +96,7 @@ Relative paths resolve from cwd. Queries do not load --config or start a service
 Offline activity is unverified. Missing/unsupported records fail without repair; no init marker needed.
 Human socket waits are bounded to 30 seconds; Ctrl+C exits 130 without cancelling execution.
 Query success exits 0 even for failed/unknown business results; errors/timeouts exit 1.` : '';
-    const writeHelp = !['serve', 'show', 'list', 'logs', 'artifact', 'maintenance'].includes(command) ? `
+    const writeHelp = !['init', 'doctor', 'serve', 'show', 'list', 'logs', 'artifact', 'maintenance'].includes(command) ? `
 Writes default to JSON, never switch by TTY. --human and --json are mutually exclusive.
 New modes/options accept --data DIR or --socket PATH; default data: ~/.sandcastle-orchestrator/data.
 Default socket: selected data/control.sock. Explicit data/socket must identify the same physical socket.
@@ -100,14 +116,16 @@ Usage: sandcastle-orchestrator COMMAND [OPTIONS]
 Available commands:
 ${commands.map(name => `  ${name}`).join('\n')}
 
-Start here: prepare a trusted external config, then explicitly run serve.
-Example: sandcastle-orchestrator serve --data /srv/orchestrator-data --config /srv/orchestrator-config/config.ts
+Start here: init creates independent demo resources; doctor checks prerequisites without running a test.
+Example: sandcastle-orchestrator init
+Then: sandcastle-orchestrator doctor
+Existing custom deployments can explicitly run serve with --config FILE --data DIR.
 Use sandcastle-orchestrator COMMAND --help for options and examples.
 Management commands default to JSON; errors go to stderr. Use explicit --human for readable queries/writes.
 New modes/options select --data/control.sock (data defaults to ~/.sandcastle-orchestrator/data), or --socket.
 Legacy writes without new options still require --socket PATH. show/list/logs accept read-only --offline.
 -h, --help     Show help without configuration or a service.
 -v, --version  Print only the installed package version.
-init, doctor, demo, setup: unreleased; not available commands.
+demo, setup: unreleased; not available commands. init does not support --reset-demo.
 Linux and Node.js 24+ required. See docs/installation.md in the installed package.`;
 }

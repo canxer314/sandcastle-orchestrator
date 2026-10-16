@@ -4,7 +4,7 @@
 
 ## 安装与运行
 
-正式包名为 `@canxer314/sandcastle-orchestrator`，命令为 `sandcastle-orchestrator`。目前已验证本地 tgz 安装，尚未发布 npm/Release。包外安装、可信配置、公开类型与运行时 import 见[安装说明](docs/installation.md)。安装消费者只需 Node/npm，不需要 pnpm、源码树或全局 tsx；产物安装可能联网下载生产依赖。`--help`、子命令 `--help` 和 `--version` 不需要配置或服务；`init`、`doctor`、`demo`、`setup` 尚不可用。
+正式包名为 `@canxer314/sandcastle-orchestrator`，命令为 `sandcastle-orchestrator`。目前已验证本地 tgz 安装，尚未发布 npm/Release。包外安装、可信配置、公开类型与运行时 import 见[安装说明](docs/installation.md)。安装消费者只需 Node/npm，不需要 pnpm、源码树或全局 tsx；产物安装可能联网下载生产依赖。`--help`、子命令 `--help` 和 `--version` 不需要配置或服务。`init` 创建独立演示资源，`doctor` 检查依赖和资源，见[演示初始化与环境检查](docs/onboarding.md)；`demo`、`setup`、`init --reset-demo` 尚不可用，检查通过不代表已运行测试。
 
 需要 Linux、Node.js 24+ 和 util-linux 提供的 `flock`；macOS/Windows 请使用 Linux 或 WSL，不承诺原生执行。开发源码仍使用 pnpm 12.3.4。执行能力还需要本机 Docker daemon、Git 和预先部署的可信测试镜像；不会自动拉取镜像。Sandcastle 固定为 `0.12.0`，Effect 固定为 `3.20.0`，升级需显式更新依赖和锁文件。以下开发入口保持可用：
 
