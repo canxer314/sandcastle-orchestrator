@@ -1,4 +1,7 @@
 node_modules/
+dist/
+*.tgz
 coverage/
 .data/
 *.sqlite*
+.claude/worktrees/

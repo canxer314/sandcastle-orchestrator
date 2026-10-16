@@ -1,10 +1,12 @@
 # Sandcastle orchestrator
 
-独立的单机 TypeScript 应用。已交付 [#15](https://github.com/canxer314/sandcastle-orchestrator/issues/15) 的请求提交与查询及 [#16](https://github.com/canxer314/sandcastle-orchestrator/issues/16) 的固定 commit 确定性执行，以及 [#17](https://github.com/canxer314/sandcastle-orchestrator/issues/17) 的外部定时提交与重复送达处理。完整规格见 [#14](https://github.com/canxer314/sandcastle-orchestrator/issues/14)。
+独立的单机 TypeScript 应用。已实现从请求提交与查询、固定 commit 确定性执行、外部定时提交与重复送达处理开始的多项能力；当前能力和验收范围见下文。完整规格见 [#14](https://github.com/canxer314/sandcastle-orchestrator/issues/14)。普通使用者请从 [Issue 到 Draft PR 使用指南](docs/user-guide.md) 开始；首次安装和配置请看 [部署与运维指南](docs/deployment-guide.md)。
 
 ## 安装与运行
 
-需要 Linux、Node.js 24+、pnpm 12.3.4 和 util-linux 提供的 `flock`。执行能力还需要本机 Docker daemon、Git 和预先部署的可信测试镜像；不会自动拉取镜像。Sandcastle 固定为 `0.12.0`，Effect 固定为 `3.20.0`，升级需显式更新依赖和锁文件。
+正式包名为 `@canxer314/sandcastle-orchestrator`，命令为 `sandcastle-orchestrator`。目前已验证本地 tgz 安装，尚未发布 npm/Release。包外安装、可信配置、公开类型与运行时 import 见[安装说明](docs/installation.md)。安装消费者只需 Node/npm，不需要 pnpm、源码树或全局 tsx；产物安装可能联网下载生产依赖。`--help`、子命令 `--help` 和 `--version` 不需要配置或服务；`init`、`doctor`、`demo`、`setup` 尚不可用。
+
+需要 Linux、Node.js 24+ 和 util-linux 提供的 `flock`；macOS/Windows 请使用 Linux 或 WSL，不承诺原生执行。开发源码仍使用 pnpm 12.3.4。执行能力还需要本机 Docker daemon、Git 和预先部署的可信测试镜像；不会自动拉取镜像。Sandcastle 固定为 `0.12.0`，Effect 固定为 `3.20.0`，升级需显式更新依赖和锁文件。以下开发入口保持可用：
 
 ```sh
 pnpm install --frozen-lockfile

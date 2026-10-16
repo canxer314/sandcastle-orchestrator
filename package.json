@@ -1,7 +1,15 @@
 {
-  "name": "sandcastle-orchestrator",
+  "name": "@canxer314/sandcastle-orchestrator",
   "version": "0.1.0",
-  "private": true,
+  "description": "Single-host execution orchestrator with a Unix socket management CLI",
+  "repository": "github:canxer314/sandcastle-orchestrator",
+  "publishConfig": { "access": "public" },
+  "bin": { "sandcastle-orchestrator": "./dist/cli.js" },
+  "files": ["dist", "docs/installation.md"],
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" }
+  },
   "packageManager": "pnpm@12.3.4",
   "type": "module",
   "engines": {
@@ -9,6 +17,8 @@
   },
   "scripts": {
     "start": "tsx src/cli.ts",
+    "build": "tsc -p tsconfig.build.json && chmod +x dist/cli.js",
+    "prepack": "pnpm run build",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },
@@ -16,12 +26,12 @@
     "@ai-hero/sandcastle": "0.12.0",
     "@modelcontextprotocol/server": "2.3.1",
     "effect": "3.20.0",
+    "tsx": "^4.20.0",
     "zod": "4.6.5"
   },
   "devDependencies": {
     "@modelcontextprotocol/client": "2.3.1",
     "@types/node": "^24.0.0",
-    "tsx": "^4.20.0",
     "typescript": "^5.9.0",
     "vitest": "^5.0.3"
   }
