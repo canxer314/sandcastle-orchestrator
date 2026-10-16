@@ -1,4 +1,19 @@
 const commandHelp: Record<string, string> = {
+  setup: `setup [--project DIR] [--name ID] [--question TEXT] [--image IMAGE] [--model MODEL]
+[--reuse-local-claude | --connection-settings FILE | --connection-environment]
+[--config NEW_FILE] [--data NEW_DIR] [--input-path NEW_FILE] [--reference-only]
+[--yes] [--non-interactive] [--human | --json]
+Prepare an independent read-only repository question at the full committed HEAD, never execute it.
+Defaults to readable interactive output; JSON/non-TTY/non-interactive require --yes and connection selection.
+--yes confirms file writes only, never local connection reuse. Setup records sources, not credentials.
+--reuse-local-claude explicitly selects CLAUDE_CONFIG_DIR/settings.json or ~/.claude/settings.json.
+Independent settings or service environment use the existing execution-time connection projection.
+Omit --model to inherit; no backend/model is forced. No /login credential migration or localhost bridge.
+Paths must be new and physically separate from application/project/demo; existing resources are not overwritten.
+--reference-only creates reference files for manual merge, never loads/rewrites config or creates/modifies data.
+Dirty changes are excluded; no clone/fetch/commit/branch switch, Docker, model, service or submit is run.
+Default image: sandcastle-orchestrator-claude:2.1.296. Build/preparation and acceptance limits: docs/setup.md.
+Example: sandcastle-orchestrator setup --project /srv/project --connection-environment --yes --json`,
   serve: `serve --data DIR --config FILE [--maintenance normal|paused|restore]
 Start the control service explicitly; stdout emits ready JSON, stderr contains service logs.
 --config executes trusted TypeScript. Keep config, data, application and checkouts separate.
@@ -80,7 +95,7 @@ Relative paths resolve from cwd. Queries do not load --config or start a service
 Offline activity is unverified. Missing/unsupported records fail without repair; no init marker needed.
 Human socket waits are bounded to 30 seconds; Ctrl+C exits 130 without cancelling execution.
 Query success exits 0 even for failed/unknown business results; errors/timeouts exit 1.` : '';
-    const writeHelp = !['serve', 'show', 'list', 'logs', 'artifact', 'maintenance'].includes(command) ? `
+    const writeHelp = !['setup', 'serve', 'show', 'list', 'logs', 'artifact', 'maintenance'].includes(command) ? `
 Writes default to JSON, never switch by TTY. --human and --json are mutually exclusive.
 New modes/options accept --data DIR or --socket PATH; default data: ~/.sandcastle-orchestrator/data.
 Default socket: selected data/control.sock. Explicit data/socket must identify the same physical socket.
@@ -108,6 +123,6 @@ New modes/options select --data/control.sock (data defaults to ~/.sandcastle-orc
 Legacy writes without new options still require --socket PATH. show/list/logs accept read-only --offline.
 -h, --help     Show help without configuration or a service.
 -v, --version  Print only the installed package version.
-init, doctor, demo, setup: unreleased; not available commands.
+init, doctor, demo: unreleased; not available commands. Use setup explicitly for a read-only project entry.
 Linux and Node.js 24+ required. See docs/installation.md in the installed package.`;
 }
