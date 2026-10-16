@@ -1,5 +1,6 @@
 import { execFile, spawn, type ChildProcess } from 'node:child_process';
 import { once } from 'node:events';
+import { createHash } from 'node:crypto';
 import { promisify } from 'node:util';
 import { mkdtemp, mkdir, readFile, readdir, readlink, rm, lstat, stat, symlink, unlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -55,11 +56,24 @@ beforeAll(async () => {
   await exec('npm', ['install', '--global', '--prefix', prefix, '--omit=dev', '--no-audit', '--no-fund', join(directory, packed.filename)], { cwd, timeout: 180_000 });
   installed = join(prefix, 'lib/node_modules/@canxer314/sandcastle-orchestrator');
   bin = join(prefix, 'bin/sandcastle-orchestrator');
+  if (process.env.ORCH_KEEP_PACKAGE_EVIDENCE === '1') {
+    const metadata = {
+      source: (await exec('git', ['rev-parse', 'HEAD'], {cwd:root})).stdout.trim(),
+      diff: (await exec('git', ['diff', 'HEAD', '--binary'], {cwd:root})).stdout,
+      directory, prefix, cwd, installed, bin, package: packed.filename,
+      sha256: createHash('sha256').update(await readFile(join(directory, packed.filename))).digest('hex'),
+      node: process.version, npm: (await exec('npm', ['--version'])).stdout.trim(),
+      linux: (await exec('uname', ['-srmo'])).stdout.trim(),
+      docker: 'controlled adapters only; real Docker not run', harness: 'not run',
+    };
+    await writeFile(join(directory, 'candidate-evidence.json'), JSON.stringify(metadata, null, 2));
+    console.log(`Package evidence retained at ${directory}`);
+  }
 }, 240_000);
 
 afterAll(async () => {
   for (const child of children) await stop(child);
-  if (directory) await rm(directory, { recursive: true, force: true });
+  if (directory && process.env.ORCH_KEEP_PACKAGE_EVIDENCE !== '1') await rm(directory, { recursive: true, force: true });
 });
 
 test('tarball installs compiled ESM and an executable formal command without the source toolchain', async () => {
@@ -707,3 +721,62 @@ test('installed setup generates consumable external config with inherited model 
   expect(detail).toMatchObject({request: {input: {commit: sha, question: '说明这个项目的主要模块及调用关系'}}, execution: {status: 'queued'}, attempts: []});
   await stop(child);
 }, 20000);
+
+test('installed candidate includes the complete user guide and role tutorial', async () => {
+  for (const path of ['README.md', ...(await readdir(join(installed, 'docs'))).filter(name => name.endsWith('.md')).map(name => `docs/${name}`)]) {
+    const document = await readFile(join(installed, path), 'utf8');
+    for (const [, target] of document.matchAll(/\]\(([^)]+)\)/g)) {
+      if (target!.includes('://') || target!.startsWith('#')) continue;
+      await expect(stat(resolve(installed, path, '..', target!.split('#')[0]!)), `${path}: ${target}`).resolves.toBeDefined();
+    }
+  }
+  for (const path of ['docs/user-guide.md', 'docs/deployment-guide.md', 'docs/queries.md', 'docs/submissions.md', 'docs/readonly-role-tutorial.md', 'examples/readonly-role/config.ts', 'examples/readonly-role/composition.ts']) {
+    expect(packed.files.map(file => file.path)).toContain(path);
+    expect(await readFile(join(installed, path), 'utf8')).not.toBe('');
+  }
+});
+
+test('installed init, doctor, demo, reset and setup resources survive package replacement together', async () => {
+  const home = join(directory, 'integrated-home');
+  const adapters = join(directory, 'integrated-bin');
+  await mkdir(home); await mkdir(adapters);
+  await writeFile(join(adapters, 'docker'), `#!/bin/sh
+case "$1" in
+--version|info|image) echo controlled;;
+run) echo controlled-candidate-test;;
+inspect) echo '{"Running":false,"Status":"exited","ExitCode":0}';;
+*) exit 9;;
+esac
+`, {mode:0o700});
+  const env = {...process.env, HOME:home, PATH:`${adapters}:${resolve(process.execPath, '..')}:/usr/bin:/bin`};
+  const cli = async (...args: string[]) => JSON.parse((await exec(bin, args, {cwd, env})).stdout);
+  await cli('init', '--yes', '--json');
+  const base = join(home, '.sandcastle-orchestrator');
+  const data = join(base, 'data'); const repo = join(base, 'demo-repo');
+  expect(await cli('doctor', '--json')).toMatchObject({ok:true});
+  const first = await cli('demo', '--json');
+  expect(first).toMatchObject({testResult:'passed', executionStopped:true, serviceExited:true});
+  const second = await cli('demo', '--data', data, '--json');
+  expect(second.executionId).not.toBe(first.executionId);
+  const history = await cli('list', '--data', data, '--offline');
+  expect(history).toHaveLength(2);
+  const logs = await cli('logs', first.executionId, '--data', data, '--offline');
+  expect(logs).toMatchObject({complete:true, stdout:'controlled-candidate-test\n'});
+  await cli('init', '--reset-demo', '--data', data, '--yes', '--json');
+  expect(await cli('list', '--data', data, '--offline')).toEqual(history);
+  expect(await cli('logs', first.executionId, '--data', data, '--offline')).toEqual(logs);
+  // Setup only generates resources; no service or real connection is started.
+  const setup = await cli('setup', '--project', repo, '--name', 'candidate', '--connection-environment', '--yes', '--json');
+  expect(await readdir(setup.paths.data)).toEqual([]);
+  const before = await resourceSnapshot(base);
+  const replacement = await localVersionTarball();
+  for (const args of [['uninstall', '@canxer314/sandcastle-orchestrator'], ['install', replacement.path], ['install', join(directory, packed.filename)]]) {
+    await exec('npm', [...args, '--global', '--prefix', prefix, '--omit=dev', '--no-audit', '--no-fund'], {cwd, timeout:180_000});
+    expect(await resourceSnapshot(base)).toEqual(before);
+    if (args[0] === 'uninstall') continue;
+    expect(await cli('list', '--data', data, '--offline')).toEqual(history);
+    expect(await cli('logs', first.executionId, '--data', data, '--offline')).toEqual(logs);
+  }
+  const service = await start(setup.paths.config, setup.paths.data, env.PATH, 'paused');
+  await stop(service);
+}, 240_000);
