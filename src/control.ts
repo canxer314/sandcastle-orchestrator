@@ -9,7 +9,7 @@ import { serviceLog } from './service-log.js';
 import { validateScheduledAt } from './submission.js';
 import type { Submission } from './config.js';
 
-export async function serve(data: string, configPath: string, maintenanceMode = 'normal') {
+export async function serve(data: string, configPath: string, maintenanceMode = 'normal', lifecycle?: { beforeStart(): Promise<void>; ready(): void }) {
   if (!['normal', 'paused', 'restore'].includes(maintenanceMode)) throw Error('Invalid startup maintenance mode');
   const { loadConfiguration } = await import('./config.js');
   const { executeRole } = await import('./roles.js');
@@ -22,6 +22,7 @@ export async function serve(data: string, configPath: string, maintenanceMode = 
   const releaseLock = await acquireControlLock(join(data, 'control.lock'));
   let records: Records;
   try {
+    await lifecycle?.beforeStart();
     records = new Records(join(data, 'records.sqlite'));
     records.startMaintenance(maintenanceMode);
   } catch (error) {
@@ -176,6 +177,7 @@ export async function serve(data: string, configPath: string, maintenanceMode = 
   };
   process.once('SIGTERM', shutdown);
   process.once('SIGINT', shutdown);
+  lifecycle?.ready();
 }
 
 export class ControlCallError extends Error {

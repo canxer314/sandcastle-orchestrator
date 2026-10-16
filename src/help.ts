@@ -1,4 +1,13 @@
 const commandHelp: Record<string, string> = {
+  demo: `demo [--config FILE] [--data DIR] [--demo-repo DIR] [--human | --json]
+Run one deterministic Docker test at the current full committed HEAD through an owned control service.
+Uses init resources; dirty changes are excluded with a warning. Never pulls images or calls models.
+Refuses occupied data and unresolved/queued work. Keeps records, attempt logs and a separate service log.
+Waits: startup 30s, execution 5m, cancellation and shutdown together 30s. No automatic retry.
+First Ctrl+C requests cancellation and checks stopping; second exits waiting, possibly unknown.
+Exit: passed and safely closed 0; test/runtime failure 1; uncertain acceptance/result/stop 2; safe interrupt 130.
+Default readable output; --json keeps diagnostics on stderr. Explicit paths must match init.json.
+Example: sandcastle-orchestrator demo --data ~/.sandcastle-orchestrator/data`,
   setup: `setup [--project DIR] [--name ID] [--question TEXT] [--image IMAGE] [--model MODEL]
 [--reuse-local-claude | --connection-settings FILE | --connection-environment]
 [--config NEW_FILE] [--data NEW_DIR] [--input-path NEW_FILE] [--reference-only]
@@ -80,12 +89,14 @@ Example: sandcastle-orchestrator maintenance --data /srv/orchestrator-data --hum
 --handling TEXT --external-results TEXT
 Record manual backup/side-effect review while admission and starts are paused. Does not resume.
 Example: sandcastle-orchestrator restore-review --socket /srv/orchestrator-data/control.sock --source operator --reason 'audit compared' --backup-point '2026-10-11T00:00:00Z' --handling 'stale queue cancelled' --external-results 'host and remote audit checked'`,
-  init: `init [--config FILE] [--data DIR] [--demo-repo DIR] [--yes] [--human | --json]
+  init: `init [--config FILE] [--data DIR] [--demo-repo DIR] [--reset-demo] [--yes] [--human | --json]
 Create separate demo configuration (explicit ESM, new template requires .ts or .mts), runtime data and a committed deterministic Git repo.
 Defaults: ~/.sandcastle-orchestrator/{config/config.ts,data,demo-repo}. Relative paths use cwd.
 Displays creation paths before confirmation. Noninteractive and JSON writes require --yes.
 Complete resources are reused without writing; conflicts/incomplete resources are preserved, never repaired.
---yes only skips confirmation, never path/configuration protection. No --reset-demo is available.
+--reset-demo discards demo repository modifications after confirmation; retains config, data, records and logs.
+Reset refuses occupied data, unfinished executions and unresolved demo journals. JSON/noninteractive reset needs --yes.
+--yes only skips confirmation, never path/configuration protection.
 No dependencies are installed, images pulled, services started or models called.
 Example: sandcastle-orchestrator init --yes`,
   doctor: `doctor [--config FILE] [--data DIR] [--demo-repo DIR] [--human | --json]
@@ -94,7 +105,7 @@ Defaults: ~/.sandcastle-orchestrator/{config/config.ts,data,demo-repo}. Relative
 An existing data/init.json locates resources; explicit paths must match physically (symlinks accepted).
 Displays trusted config before loading it: TypeScript loading executes host code and is not side-effect-free.
 Checks never install/fix dependencies, pull images, authenticate remotely or call a model.
-Image presence does not verify credentials. demo is not available in this increment.
+Image presence does not verify credentials or test success. Run demo explicitly after checks pass.
 Example: sandcastle-orchestrator doctor --data ~/.sandcastle-orchestrator/data`,
 };
 
@@ -112,7 +123,7 @@ Relative paths resolve from cwd. Queries do not load --config or start a service
 Offline activity is unverified. Missing/unsupported records fail without repair; no init marker needed.
 Human socket waits are bounded to 30 seconds; Ctrl+C exits 130 without cancelling execution.
 Query success exits 0 even for failed/unknown business results; errors/timeouts exit 1.` : '';
-    const writeHelp = !['setup', 'init', 'doctor', 'serve', 'show', 'list', 'logs', 'artifact', 'maintenance'].includes(command) ? `
+    const writeHelp = !['setup', 'init', 'doctor', 'demo', 'serve', 'show', 'list', 'logs', 'artifact', 'maintenance'].includes(command) ? `
 Writes default to JSON, never switch by TTY. --human and --json are mutually exclusive.
 New modes/options accept --data DIR or --socket PATH; default data: ~/.sandcastle-orchestrator/data.
 Default socket: selected data/control.sock. Explicit data/socket must identify the same physical socket.
@@ -142,6 +153,6 @@ New modes/options select --data/control.sock (data defaults to ~/.sandcastle-orc
 Legacy writes without new options still require --socket PATH. show/list/logs accept read-only --offline.
 -h, --help     Show help without configuration or a service.
 -v, --version  Print only the installed package version.
-demo: unreleased; not an available command. init does not support --reset-demo. Use setup explicitly for a read-only project entry.
+Run demo after doctor to test the committed demo repository. Use setup explicitly for a read-only project entry.
 Linux and Node.js 24+ required. See docs/installation.md in the installed package.`;
 }

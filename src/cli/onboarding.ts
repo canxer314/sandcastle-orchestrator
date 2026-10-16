@@ -1,5 +1,8 @@
+import { randomUUID } from 'node:crypto';
+import { acquireControlLock } from '../lock.js';
+import { assertDemoIdle } from './demo-safety.js';
 import { execFile } from 'node:child_process';
-import { access, lstat, mkdir, readFile, stat, writeFile } from 'node:fs/promises';
+import { access, lstat, mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, extname, join, resolve, sep } from 'node:path';
@@ -11,9 +14,9 @@ import { checkDataSeparation, contains, physicalPath } from '../paths.js';
 
 const exec = promisify(execFile);
 const image = 'node:22.22-alpine';
-type Paths = { config: string; data: string; demoRepo: string };
-type Marker = Paths & { layoutVersion: 1; repoId: string; capabilityId: string };
-type Check = { name: string; ok: boolean; detail: string; fix?: string };
+export type Paths = { config: string; data: string; demoRepo: string };
+export type Marker = Paths & { layoutVersion: 1; repoId: string; capabilityId: string };
+export type Check = { name: string; ok: boolean; detail: string; fix?: string };
 
 async function exists(path: string) {
   try { await lstat(path); return true; }
@@ -29,7 +32,7 @@ function overlaps(a: string, b: string) {
   return contains(a, b) || contains(b, a);
 }
 
-async function separate(paths: Paths) {
+export async function separate(paths: Paths) {
   if (paths.config === join(dirname(paths.config), 'package.json')) throw Error('Configuration file conflicts with the generated ESM package.json; choose a separate TypeScript file');
   const app = await physicalPath(resolve(import.meta.dirname, '../..'));
   const configDir = await physicalPath(dirname(paths.config));
@@ -56,7 +59,7 @@ async function separate(paths: Paths) {
   }
 }
 
-async function select(values: Record<string, unknown>): Promise<{ paths: Paths; marker?: Marker }> {
+export async function select(values: Record<string, unknown>): Promise<{ paths: Paths; marker?: Marker }> {
   const root = join(homedir(), '.sandcastle-orchestrator');
   const paths = {
     config: resolve(String(values.config ?? join(root, 'config/config.ts'))),
@@ -85,7 +88,7 @@ async function select(values: Record<string, unknown>): Promise<{ paths: Paths; 
   return { paths, marker };
 }
 
-async function probe(checks: Check[], name: string, binary: string, args: string[], fix: string) {
+export async function probe(checks: Check[], name: string, binary: string, args: string[], fix: string) {
   try {
     const result = await exec(binary, args, { timeout: 5_000, maxBuffer: 1024 * 1024, env: { PATH: process.env.PATH } });
     checks.push({ name, ok: true, detail: result.stdout.trim() || result.stderr.trim() || 'Available' });
@@ -94,7 +97,7 @@ async function probe(checks: Check[], name: string, binary: string, args: string
   }
 }
 
-async function dependencies(checks: Check[], doctor: boolean) {
+export async function dependencies(checks: Check[], doctor: boolean) {
   checks.push({ name: 'platform', ok: process.platform === 'linux', detail: `${process.platform}/${process.arch}`, fix: 'Use Linux or WSL with Docker Engine.' });
   checks.push({ name: 'node', ok: Number(process.versions.node.split('.')[0]) >= 24, detail: process.version, fix: 'Install Node.js 24+ from https://nodejs.org/en/download.' });
   await probe(checks, 'git', 'git', ['--version'], 'Install Git (Debian/Ubuntu: sudo apt-get install git).');
@@ -105,7 +108,7 @@ async function dependencies(checks: Check[], doctor: boolean) {
   }
 }
 
-async function verify(paths: Paths, marker: Marker) {
+export async function verify(paths: Paths, marker: Marker) {
   for (const path of [paths.config, join(dirname(paths.config), 'package.json')]) {
     if (!(await stat(path)).isFile()) throw Error(`Missing regular configuration file: ${path}`);
   }
@@ -150,6 +153,55 @@ export default {
 `;
 }
 
+async function createDemoRepo(repo: string) {
+  await writeFile(join(repo, 'test.cjs'), "const { test } = require('node:test');\nconst assert = require('node:assert/strict');\ntest('deterministic addition', () => assert.equal(2 + 2, 4));\n", { flag: 'wx', mode: 0o600 });
+  await git(repo, ['init', '--template=']);
+  await git(repo, ['add', '--', 'test.cjs']);
+  await git(repo, ['-c', 'user.name=Sandcastle Demo', '-c', 'user.email=demo@example.invalid', '-c', 'commit.gpgsign=false', 'commit', '-m', 'Initialize deterministic demo']);
+}
+
+async function resetRepoIdentity(repo: string) {
+  const identity = await lstat(repo);
+  if (!identity.isDirectory() || !(await lstat(join(repo, '.git'))).isDirectory()) throw Error('Reset requires an independent demo repository, not a linked worktree');
+  const common = String((await git(repo, ['rev-parse', '--git-common-dir'])).stdout).trim();
+  if (await physicalPath(resolve(repo, common)) !== join(repo, '.git')) throw Error('Reset refuses shared or external Git metadata');
+  const worktrees = String((await git(repo, ['worktree', 'list', '--porcelain', '-z'])).stdout).split('\0').filter(field => field.startsWith('worktree '));
+  if (worktrees.length !== 1) throw Error('Reset refuses a demo repository with other registered worktrees; preserve their shared Git metadata');
+  return identity;
+}
+
+async function resetDemo(paths: Paths, marker: Marker, yes: boolean) {
+  console.error(`Reset will discard ALL demo repository modifications: ${paths.demoRepo}. Configuration, data, records and logs are retained.`);
+  const releaseDemo = await acquireControlLock(join(paths.data, 'demo.lock'));
+  try {
+    const releaseControl = await acquireControlLock(join(paths.data, 'control.lock'));
+    try {
+      await assertDemoIdle(paths.data);
+      await separate(paths);
+      await verify(paths, marker);
+      const before = await resetRepoIdentity(paths.demoRepo);
+      if (!yes) {
+        const prompt = createInterface({input:process.stdin, output:process.stderr});
+        try { if (!/^y(es)?$/i.test((await prompt.question('Discard demo changes and rebuild this repository? [y/N] ')).trim())) throw Error('Reset declined; no resources changed'); }
+        finally { prompt.close(); }
+      }
+      await separate(paths);
+      await assertDemoIdle(paths.data);
+      const after = await resetRepoIdentity(paths.demoRepo);
+      if (!after.isDirectory() || before.dev !== after.dev || before.ino !== after.ino) throw Error('Demo repository changed during confirmation; preserve it');
+      const staging = `${paths.demoRepo}.reset-${randomUUID()}`;
+      const previous = `${staging}.previous`;
+      await mkdir(staging, {mode:0o700});
+      try { await createDemoRepo(staging); }
+      catch (error) { await rm(staging, {recursive:true, force:true}); throw error; }
+      await rename(paths.demoRepo, previous);
+      try { await rename(staging, paths.demoRepo); }
+      catch (error) { await rename(previous, paths.demoRepo); throw error; }
+      await rm(previous, {recursive:true});
+    } finally { releaseControl(); }
+  } finally { releaseDemo(); }
+}
+
 export async function onboarding(command: string, values: Record<string, unknown>) {
   const checks: Check[] = [];
   let paths: Paths | undefined;
@@ -164,10 +216,17 @@ export async function onboarding(command: string, values: Record<string, unknown
     if (selected.marker) {
       const config = await verify(paths, selected.marker);
       status = 'reused';
+      if (values['reset-demo']) {
+        if (checks.some(check => !check.ok)) throw Error('Reset dependencies missing');
+        await resetDemo(paths, selected.marker, values.yes === true);
+        status = 'reset';
+      }
       if (command === 'doctor') {
         const images = new Set(config.environments.flatMap(env => env.docker ? [env.docker.image] : []));
         for (const selectedImage of images) await probe(checks, `image:${selectedImage}`, 'docker', ['image', 'inspect', selectedImage], `Deploy a trusted image manually: docker pull ${selectedImage}. Image presence is not authentication verification.`);
       }
+    } else if (values['reset-demo']) {
+      throw Error('Reset requires a complete existing initialization marker; no resources changed');
     } else if (command === 'doctor') {
       status = 'uninitialized';
       checks.push({ name: 'initialization', ok: false, detail: 'No initialization marker; configuration was not loaded.', fix: 'Run init with these same resource paths after reviewing them.' });
@@ -198,10 +257,7 @@ export async function onboarding(command: string, values: Record<string, unknown
       }
       await writeFile(join(dirname(paths.config), 'package.json'), '{"private":true,"type":"module"}\n', { flag: 'wx', mode: 0o600 });
       await writeFile(paths.config, template(paths), { flag: 'wx', mode: 0o600 });
-      await writeFile(join(paths.demoRepo, 'test.cjs'), "const { test } = require('node:test');\nconst assert = require('node:assert/strict');\ntest('deterministic addition', () => assert.equal(2 + 2, 4));\n", { flag: 'wx', mode: 0o600 });
-      await git(paths.demoRepo, ['init', '--template=']);
-      await git(paths.demoRepo, ['add', '--', 'test.cjs']);
-      await git(paths.demoRepo, ['-c', 'user.name=Sandcastle Demo', '-c', 'user.email=demo@example.invalid', '-c', 'commit.gpgsign=false', 'commit', '-m', 'Initialize deterministic demo']);
+      await createDemoRepo(paths.demoRepo);
       const marker: Marker = { layoutVersion: 1, ...paths, repoId: 'demo', capabilityId: 'demo-test' };
       await writeFile(join(paths.data, 'init.json'), `${JSON.stringify(marker, null, 2)}\n`, { flag: 'wx', mode: 0o600 });
       status = 'created';
@@ -220,8 +276,8 @@ export async function onboarding(command: string, values: Record<string, unknown
   if (!ok) process.exitCode = 1;
   const quote = (value: string) => `'${value.replaceAll("'", "'\"'\"'")}'`;
   const selectors = paths ? ` --data ${quote(paths.data)} --config ${quote(paths.config)} --demo-repo ${quote(paths.demoRepo)}` : '';
-  const next = `sandcastle-orchestrator ${status === 'uninitialized' ? 'init' : 'doctor'}${selectors}`;
-  const result = { ok, status, paths, checks, ...(error ? { error } : {}), next, unavailable: 'demo and reset-demo are not available in this increment. No service, container or model was started.' };
+  const next = `sandcastle-orchestrator ${status === 'uninitialized' ? 'init' : command === 'doctor' && ok ? 'demo' : 'doctor'}${selectors}`;
+  const result = { ok, status, paths, checks, ...(error ? { error } : {}), next, unavailable: 'No service, container or model was started by this command.' };
   if (values.json) console.log(JSON.stringify(result));
   else console.log([
     `${command}: ${ok ? status : 'conditions not met'}`,

@@ -93,16 +93,16 @@ test('help and no-argument discovery need neither configuration nor a service', 
   }
   const discovery = await exec(bin, [], { cwd });
   for (const command of commands) expect(discovery.stdout).toContain(command);
-  expect(discovery.stdout).toMatch(/demo.*unreleased/i);
+  expect(discovery.stdout).toContain('Run demo after doctor');
   expect(await readdir(cwd)).toEqual(before);
 });
 
 test('unknown commands retain JSON errors and cannot match inherited object properties', async () => {
-  for (const command of ['unknown', 'demo', 'toString', '__proto__']) {
+  for (const command of ['unknown', 'toString', '__proto__']) {
     await expect(exec(bin, [command], { cwd })).rejects.toMatchObject({
       code: 1,
       stdout: '',
-      stderr: `${JSON.stringify({ error: 'Unknown command; use setup, serve, submit, show, list, logs, artifact, cancel, confirm-stop, resolve, retry, cleanup, pause, resume, maintenance, restore-review, init or doctor' })}\n`,
+      stderr: `${JSON.stringify({ error: 'Unknown command; use demo, setup, serve, submit, show, list, logs, artifact, cancel, confirm-stop, resolve, retry, cleanup, pause, resume, maintenance, restore-review, init or doctor' })}\n`,
     });
     await expect(exec(bin, [command, '--help'], { cwd })).rejects.toMatchObject({
       code: 1,
@@ -235,7 +235,7 @@ test('installed onboarding rejects unsafe paths and incomplete resources without
   expect(await readdir(base)).toEqual([]);
   await expect(exec(bin, ['init', ...args], { cwd })).rejects.toMatchObject({ code: 1, stdout: expect.stringContaining('--yes') });
   expect(await readdir(base)).toEqual([]);
-  for (const extra of [['extra'], ['--reset-demo'], ['--socket', '/absent'], ['--offline'], ['--human', '--json'], ['--repo', 'other']]) {
+  for (const extra of [['extra'], ['--socket', '/absent'], ['--offline'], ['--human', '--json'], ['--repo', 'other']]) {
     await expect(exec(bin, ['init', ...args, '--yes', ...extra], { cwd })).rejects.toMatchObject({ code: 1 });
     expect(await readdir(base)).toEqual([]);
   }

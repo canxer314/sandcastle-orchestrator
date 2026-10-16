@@ -4,6 +4,20 @@ import { stat, open } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
+export function toolNeedsReview(call: Record<string, any>) {
+  return !['completed','cancelled','resolved','start_failed'].includes(call.runState) || call.publication?.state==='unknown' || call.requiresAttention || call.persistenceError
+    || (call.cancellation && (!call.stopConfirmation || call.stopConfirmation.kind === 'manual') && call.runState !== 'start_failed');
+}
+
+export function toolConfirmed(call: Record<string, any>) {
+  return call.stopConfirmation?.kind === 'manual' && typeof call.stopConfirmation.externalResults === 'string' && !!call.stopConfirmation.externalResults.trim();
+}
+
+export function toolReconciled(call: Record<string, any>) {
+  return toolConfirmed(call) && typeof call.reconciliation?.recordedAt === 'string'
+    && Number.isFinite(Date.parse(call.reconciliation.recordedAt)) && ['resolve','retry'].includes(call.reconciliation.decision);
+}
+
 export class RecordReader {
   constructor(private db: DatabaseSync, private projection?: {unknown(id: string): boolean; error(id: string): string | undefined}) {}
 
