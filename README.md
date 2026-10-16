@@ -19,6 +19,8 @@ pnpm start serve --data /srv/orchestrator-data --config ./examples/config.ts
 
 ## 维护窗口、备份与恢复
 
+安装、卸载和换版的资源保留及手工操作步骤见[安装说明](docs/installation.md#资源保留与手工换版)。包管理器不能发现所有服务实例，也不会替你暂停或停止服务。
+
 管理入口新增 `maintenance` 查询，`pause`／`resume --target admission|starts|all`（默认 all），均要求 `--source`、`--reason`。暂停状态及操作历史保存在 SQLite，重启不自动恢复。`serve --maintenance paused` 在首次 dispatch 前暂停接纳与启动；恢复旧备份必须使用 `serve --maintenance restore`，每次建立新的核对门槛。暂停启动不暂停或 kill 已有 attempt，也不表示它已停止。查询、协作取消和人工核对仍可用；优先等待 `list/show` 中执行可信结束，不能等时用现有 `cancel`、`confirm-stop`、`resolve`，未确认停止仍为 unknown，不释放额度、不替代执行。不要关闭 harness 或容器制造结束。
 
 ```sh
@@ -97,7 +99,7 @@ pnpm start show REQUEST_OR_EXECUTION_ID --socket /srv/orchestrator-data/control.
 
 提交可选 `--deduplication-key KEY` 和 `--scheduled-at 2026-10-11T00:00:00Z`；socket 字段为 `deduplicationKey`、`scheduledAt`。键必须是非空字符串，计划时间必须是带时区的 ISO 时间字符串，畸形字段返回 HTTP 400，不建立记录。同一 `source` 内，同键且 repo、capability、原始 JSON 输入、计划时间相同，返回原有接纳回执；JSON 对象字段顺序不影响比较，数组顺序有意义，计划时间按原字符串比较。不同内容返回 HTTP 400 和 `Deduplication key conflict`，CLI 非零退出，不覆盖旧记录。不同来源互不合并，无键每次新建。去重只登记成功接纳的请求；拒绝记录保留键线索，但不占键。接纳、执行和键登记在同一 SQLite 事务中完成。
 
-旧 CLI/socket 提交无需更改；旧 SQLite 表与记录保留，启动时只新增元数据和去重旁表，历史记录的两个新字段为 `null`。停服务并备份数据库后升级；回退旧程序仍可读写原表，但不支持去重，切勿在回退期间继续投递需要去重的任务。重新升级也不能为回退期间的请求追补键。
+旧 CLI/socket 提交无需更改；旧 SQLite 表与记录保留，启动时只新增元数据和去重旁表，历史记录的两个新字段为 `null`。停服务并备份数据库后升级；不能据此推断任意旧程序都能读新版数据。旧程序若不支持去重，不能在回退期间继续投递需要去重的任务；重新升级也不能为回退期间的请求追补键。换版、兼容范围及回退步骤见[安装说明](docs/installation.md#资源保留与手工换版)。
 
 外部脚本、cron/systemd timer 配置及补跑边界见 [外部定时提交](docs/external-submission.md)。编排器不重建未收到的触发，不阻止排队重叠，请求去重不保证副作用幂等。
 
