@@ -105,7 +105,7 @@ sandcastle-orchestrator submit --socket "$DATA/control.sock" \
   --input "$INPUT" --source readonly-tutorial
 ```
 
-保存实际回执的 `requestId` 和 `executionId`。`accepted:true` 只代表受理，提交是异步的；默认 JSON 下即使 `accepted:false` 也可能 exit 0，不能只看进程退出码。source 是追踪字段，不是认证身份。回执丢失时先查当前实例 `list` 和已知记录，不自动重发；这里不依赖尚未交付的新输入或受理核对选项。
+保存实际回执的 `requestId` 和 `executionId`。`accepted:true` 只代表受理，提交是异步的；默认 JSON 下即使 `accepted:false` 也可能 exit 0，不能只看进程退出码。source 是追踪字段，不是认证身份。回执丢失时先查当前实例 `list` 和已知记录，不自动重发。本教程保持 `--input` 和显式 socket 的基础调用；已合入的文件输入、人类可读回执及 source/key 核对另见[提交指南](submissions.md)和[查询指南](queries.md)，不是运行本示例的前提。
 
 ## 4. 查询执行和本地报告
 
@@ -195,5 +195,7 @@ pnpm test --maxWorkers=1
 `tests/package.test.ts` 直接复制本教程两个文件到源码之外的 ESM 项目，安装同一 tgz 及显式依赖，使用该项目自己的 TypeScript 检查。正式已安装 CLI 经真实 socket 完成非法输入拒绝、固定 SHA role 受理/查询、报告 artifact 和日志读取；另加载组合配置并独立提交 `list-root`，再提交组合 role，由受控 harness 客户端经真实 MCP stdio 调用 `list_root`，用 CLI 核对 `toolCalls`、固定 SHA、调用日志与最终报告。provider 与 Docker binary 使用受控 adapter，不快照私有实现。断言只读启动参数和原 checkout 不变，不冒充内核写保护证据。仓库的开发期类型映射指向公开 `src/index.ts`，无需先生成 dist；外部消费检查没有此映射，仍解析 tgz 声明和运行时导出。
 
 本次 `pnpm run typecheck` 通过；`pnpm test --maxWorkers=1` 全套 14 文件、274 项通过、20 项真实环境 opt-in 跳过，包含 CLI/socket、role、MCP 与 8 项包消费测试。教程的 10 个 shell 代码块通过 `sh -n` 语法检查，没有据此执行 Docker 或模型。首次并发定向和全套曾出现既有 ready/restore/MCP 等待超时，串行全套原断言通过，未修改生产代码或放宽超时。
+
+创建 PR 前合入最新 `master` 的 `80bad49`，保留 #76/#77 已交付的查询和提交指南，并增加直达链接。组合基线重新验证 `pnpm run typecheck` 与 `pnpm test --maxWorkers=1`，18 文件通过、1 文件跳过，341 项通过、21 项真实环境 opt-in 跳过；公开包消费、CLI/socket 与受控组合路径全部通过。
 
 未运行真实 Docker、真实模型、私人连接、远端调用或发布，未验收所选镜像、认证、网络可达、模型答案和 role 实际调用 `list_root`。这些须在另获授权的环境通过相同用户入口验收并记录镜像/CLI 版本、固定 SHA、答案核对和独立停止证据。受控 adapter 通过不补齐父规格 #65 的真实 Agent 接入，也不替代历史特定环境的验收。
