@@ -1,6 +1,6 @@
 # Sandcastle orchestrator
 
-独立的单机 TypeScript 应用。已实现从请求提交与查询、固定 commit 确定性执行、外部定时提交与重复送达处理开始的多项能力；当前能力和验收范围见下文。完整规格见 [#14](https://github.com/canxer314/sandcastle-orchestrator/issues/14)。普通使用者请从 [Issue 到 Draft PR 使用指南](docs/user-guide.md) 开始；首次安装和配置请看 [部署与运维指南](docs/deployment-guide.md)。
+独立的单机 TypeScript 应用。已实现从请求提交与查询、固定 commit 确定性执行、外部定时提交与重复送达处理开始的多项能力；当前能力和验收范围见下文。完整规格见 [#14](https://github.com/canxer314/sandcastle-orchestrator/issues/14)。普通使用者请从 [Issue 到 Draft PR 使用指南](docs/user-guide.md) 开始；首次安装和配置请看 [部署与运维指南](docs/deployment-guide.md)。新增只读 role 和组合现有任务请看[完整只读角色扩展与任务组合教程](docs/readonly-role-tutorial.md)。
 
 ## 安装与运行
 
