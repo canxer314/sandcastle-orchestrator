@@ -40,20 +40,22 @@ Example: sandcastle-orchestrator retry EXECUTION_ID --socket /srv/orchestrator-d
   cleanup: `cleanup --socket PATH
 Apply existing retention rules to eligible terminal evidence, not active or uncertain work.
 Example: sandcastle-orchestrator cleanup --socket /srv/orchestrator-data/control.sock`,
-  maintenance: `maintenance --socket PATH
-Query persisted admission/start pauses and restore-review state.
-Example: sandcastle-orchestrator maintenance --socket /srv/orchestrator-data/control.sock`,
   pause: `pause --socket PATH --source TEXT --reason TEXT [--target all|admission|starts]
 Pause admission and/or starts (default all). Existing executions are not stopped.
 Example: sandcastle-orchestrator pause --socket /srv/orchestrator-data/control.sock --source operator --reason 'backup window'`,
   resume: `resume --socket PATH --source TEXT --reason TEXT [--target all|admission|starts]
 Explicitly resume admission and/or starts (default all); restore requires review first.
 Example: sandcastle-orchestrator resume --socket /srv/orchestrator-data/control.sock --source operator --reason 'review accepted'`,
+  maintenance: `maintenance --socket PATH
+Query persisted admission/start pauses and restore-review state.
+Example: sandcastle-orchestrator maintenance --socket /srv/orchestrator-data/control.sock`,
   'restore-review': `restore-review --socket PATH --source TEXT --reason TEXT --backup-point TEXT
 --handling TEXT --external-results TEXT
 Record manual backup/side-effect review while admission and starts are paused. Does not resume.
 Example: sandcastle-orchestrator restore-review --socket /srv/orchestrator-data/control.sock --source operator --reason 'audit compared' --backup-point '2026-10-11T00:00:00Z' --handling 'stale queue cancelled' --external-results 'host and remote audit checked'`,
 };
+
+export const commands = Object.keys(commandHelp);
 
 export function help(command?: string): string {
   if (command) {
@@ -64,7 +66,7 @@ export function help(command?: string): string {
 Usage: sandcastle-orchestrator COMMAND [OPTIONS]
 
 Available commands:
-${Object.keys(commandHelp).map(name => `  ${name}`).join('\n')}
+${commands.map(name => `  ${name}`).join('\n')}
 
 Start here: prepare a trusted external config, then explicitly run serve.
 Example: sandcastle-orchestrator serve --data /srv/orchestrator-data --config /srv/orchestrator-config/config.ts

@@ -96,6 +96,21 @@ test('help and no-argument discovery need neither configuration nor a service', 
   await expect(exec(bin, ['init', '--help'], { cwd })).rejects.toMatchObject({ code: 1 });
 });
 
+test('unknown commands retain JSON errors and cannot match inherited object properties', async () => {
+  for (const command of ['unknown', 'init', 'toString', '__proto__']) {
+    await expect(exec(bin, [command], { cwd })).rejects.toMatchObject({
+      code: 1,
+      stdout: '',
+      stderr: `${JSON.stringify({ error: 'Unknown command; use serve, submit, show, list, logs, artifact, cancel, confirm-stop, resolve, retry, cleanup, pause, resume, maintenance or restore-review' })}\n`,
+    });
+    await expect(exec(bin, [command, '--help'], { cwd })).rejects.toMatchObject({
+      code: 1,
+      stdout: '',
+      stderr: `${JSON.stringify({ error: `Unknown command: ${command}` })}\n`,
+    });
+  }
+});
+
 test('external trusted TypeScript keeps tsx syntax and relative imports through installed CLI/socket', async () => {
   const configDir = join(directory, 'config');
   await mkdir(configDir);

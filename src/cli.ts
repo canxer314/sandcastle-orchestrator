@@ -2,7 +2,7 @@
 import { readFile } from 'node:fs/promises';
 import { parseArgs } from 'node:util';
 import { serviceLog } from './service-log.js';
-import { help } from './help.js';
+import { commands, help } from './help.js';
 
 let serving = false;
 
@@ -19,7 +19,7 @@ try {
     const values = parsed as Record<string, string | undefined>;
     const { call, serve } = await import('./control.js');
     const command = positionals[0];
-    if (!['serve', 'submit', 'show', 'list', 'logs', 'artifact', 'cancel', 'confirm-stop', 'resolve', 'retry', 'cleanup', 'pause', 'resume', 'maintenance', 'restore-review'].includes(command)) throw new Error('Unknown command; use serve, submit, show, list, logs, artifact, cancel, confirm-stop, resolve, retry, cleanup, pause, resume, maintenance or restore-review');
+    if (!commands.includes(command)) throw new Error(`Unknown command; use ${commands.slice(0, -1).join(', ')} or ${commands.at(-1)}`);
     if (['show', 'logs', 'artifact', 'cancel', 'confirm-stop', 'resolve', 'retry'].includes(command) && !positionals[1]) throw new Error('Missing identifier');
     const required = (name: string) => {
       const value = values[name];
