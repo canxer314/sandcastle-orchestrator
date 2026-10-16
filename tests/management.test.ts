@@ -456,7 +456,7 @@ test.each([
   { args: ['artifact', 'execution', '--offset=-1'], error: 'Invalid --offset' },
   { args: ['artifact', 'execution', '--offset', '1.5'], error: 'Invalid --offset' },
   { args: ['artifact', 'execution', '--offset', ''], error: 'Invalid --offset' },
-  { args: ['artifact', 'execution'], error: 'Missing --socket' },
+  { args: ['artifact', 'execution'], error: 'Missing --name' },
   { args: ['artifact', 'execution', '--socket', '/unused'], error: 'Missing --name' },
   { args: ['submit'], error: 'Missing --socket' },
   { args: ['submit', '--socket', '/unused'], error: 'Missing --repo' },

@@ -2,10 +2,9 @@ import { createServer, request } from 'node:http';
 import { mkdir, chmod, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { acquireControlLock } from './lock.js';
-import { checkDataSeparation, checkToolEvidenceDirectories } from './paths.js';
+import { checkDataSeparation } from './paths.js';
+import { showQuery, queryEvidence } from './record-queries.js';
 import { Records } from './records.js';
-import { open } from 'node:fs/promises';
-import { constants } from 'node:fs';
 import { serviceLog } from './service-log.js';
 import type { Submission } from './config.js';
 
@@ -13,7 +12,7 @@ export async function serve(data: string, configPath: string, maintenanceMode = 
   if (!['normal', 'paused', 'restore'].includes(maintenanceMode)) throw Error('Invalid startup maintenance mode');
   const { loadConfiguration } = await import('./config.js');
   const { executeRole } = await import('./roles.js');
-  const { execute, readArtifact, cancelExecution } = await import('./execution.js');
+  const { execute, cancelExecution } = await import('./execution.js');
   const config = await loadConfiguration(configPath);
   await checkDataSeparation(data, configPath, config);
   process.umask(0o077);
@@ -118,49 +117,7 @@ export async function serve(data: string, configPath: string, maintenanceMode = 
           break;
         case 'logs':
         case 'artifact': {
-          const detail = records.show(message.id);
-          const attempt = detail.attempts.find(a => a.id === message.attempt) ?? (message.attempt ? undefined : detail.attempts.at(-1));
-          if (!attempt) throw Error('Attempt not found');
-          if (message.call !== undefined && (typeof message.call !== 'string' || !/^[1-9][0-9]*$/.test(message.call))) throw Error('Invalid tool call identifier');
-          const evidence = message.call === undefined ? attempt : attempt.toolCalls?.find((c:{id:string})=>c.id===message.call);
-          if (!evidence) throw Error('Tool call not found');
-          const directory = join(data, 'attempts', String(attempt.id),...(message.call === undefined ? [] : ['tools',message.call]));
-          if (message.command === 'artifact' && !evidence.artifacts?.some((a: {name:string}) => a.name === message.name)) throw Error('Artifact not registered');
-          if (attempt.cleanup) {
-            result = message.command === 'logs'
-              ? {attemptId:attempt.id,actualSha:attempt.actualSha,availability:attempt.cleanup.status,cleanup:attempt.cleanup,stdout:null,stderr:null,truncated:{stdout:false,stderr:false},complete:false}
-              : {attemptId:attempt.id,actualSha:attempt.actualSha,name:message.name,availability:attempt.cleanup.status,cleanup:attempt.cleanup,encoding:'base64',content:null};
-            if (message.call !== undefined) result = {...result,callId:message.call};
-            break;
-          }
-          if (message.call !== undefined) await checkToolEvidenceDirectories(join(data,'attempts',String(attempt.id)),message.call,message.command === 'artifact',true);
-          if (message.command === 'logs') {
-            const read = async (stream: string) => {
-              try {
-                const file=await open(join(directory, `${stream}.log`),constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
-                try {
-                  const stat=await file.stat();if(!stat.isFile())throw Error('Log is not a regular file');
-                  const buffer=Buffer.alloc(Math.min(stat.size,65536));
-                  await file.read(buffer,0,buffer.length,Math.max(0,stat.size-buffer.length));
-                  return {text:buffer.toString('utf8'),truncated:stat.size>buffer.length};
-                } finally {await file.close()}
-              } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null; throw error; }
-            };
-            const stdout = await read('stdout'); const stderr = await read('stderr');
-            result = {attemptId:attempt.id,actualSha:attempt.actualSha,availability:stdout !== null && stderr !== null ? 'available' : 'unavailable',stdout:stdout?.text??null,stderr:stderr?.text??null,truncated:{stdout:stdout?.truncated??false,stderr:stderr?.truncated??false},complete:evidence.logs?.complete === true && stdout !== null && stderr !== null};
-          } else {
-            let content: Awaited<ReturnType<typeof readArtifact>> | null;
-            try { content = await readArtifact(join(directory,'artifacts'),message.name,message.offset); }
-            catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; content = null; }
-            result = {attemptId:attempt.id,actualSha:attempt.actualSha,name:message.name,availability:content === null ? 'unavailable' : 'available',encoding:'base64',...(typeof content==='object' && content!==null?content:{content})};
-          }
-          // File reads yield to other management requests; do not return stale completeness
-          // if cleanup removed evidence while the descriptor was open.
-          const current = records.show(message.id).attempts.find(a => a.id === attempt.id);
-          if (current?.cleanup) result = message.command === 'logs'
-            ? {attemptId:attempt.id,actualSha:attempt.actualSha,availability:current.cleanup.status,cleanup:current.cleanup,stdout:null,stderr:null,truncated:{stdout:false,stderr:false},complete:false}
-            : {attemptId:attempt.id,actualSha:attempt.actualSha,name:message.name,availability:current.cleanup.status,cleanup:current.cleanup,encoding:'base64',content:null};
-          if (message.call !== undefined) result = {...result,callId:message.call};
+          result = await queryEvidence(records,data,message);
           break;
         }
         case 'cancel':
@@ -187,7 +144,7 @@ export async function serve(data: string, configPath: string, maintenanceMode = 
           break;
         }
         case 'show':
-          result = records.show(message.id);
+          result = showQuery(records, message);
           break;
         default:
           throw new Error('Unknown command');
@@ -226,10 +183,11 @@ export async function serve(data: string, configPath: string, maintenanceMode = 
   process.once('SIGINT', shutdown);
 }
 
-export function call(socket: string, message: unknown): Promise<unknown> {
+export function call(socket: string, message: unknown, signal?: AbortSignal): Promise<unknown> {
   return new Promise((resolve, reject) => {
-    const req = request({ socketPath: socket, path: '/', method: 'POST' }, res => {
+    const req = request({ socketPath: socket, path: '/', method: 'POST', signal }, res => {
       let body = '';
+      res.on('error', reject);
       res.on('data', chunk => { body += chunk; });
       res.on('end', () => {
         try {
