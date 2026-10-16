@@ -56,4 +56,14 @@
 
 正式 npm/Release 链接尚不存在可验证记录，两个远端渠道下载与哈希、正式固定版本及 latest 独立安装、正式产物 init/doctor/依赖修复/真实 demo 均未运行。README 首页及现有安装指南保持候选阶段状态；草案不作为已发布入口。
 
-下一步需维护者准备可核实的 npm 身份和 scope/public 写权限，并明确授权该版本/哈希发布、GitHub Release 与隔离 Linux/Docker 复验。之后才执行发布操作、记录真实结果、更新 Release 正文和首页。发布失败保留证据，不自行撤包或删除 Release。
+初次准备结束时，下一步为取得发布授权和核实 npm 权限。后续进展见下节；发布失败保留证据，不自行撤包或删除 Release。
+
+## 授权后复查
+
+用户随后明确回复“继续，我给你授权”。本次 `0.1.0` 同哈希候选的 npm public/latest、GitHub Release 发布及独立环境真实 Docker 快速开始验证已获授权，不再将缺少发布许可列为阻塞。
+
+2026-10-17 03:19 Asia/Shanghai 复查：`npm whoami` 和 `npm access list packages` 仍返回 ENEEDAUTH，包查询仍为 E404；实际 npm 身份与 scope/public 写权限仍未核实。已请用户在本机终端完成 npm 登录，不在聊天中传递凭据。
+
+GitHub API 返回该仓库 push/maintain/admin 权限为 true，`v0.1.0` tag/Release 仍不存在。Docker client/server 均为 29.8.1，演示镜像 `node:22.22-alpine` 已存在，ID 为 `sha256:e58326d0d441090181ac150dc2078d3e2cf6a0d42e809aebba3ef5880935ffdd`；Git 2.53.0 与 `/usr/bin/flock` 可用。候选原件 SHA-256 再次匹配。
+
+当前唯一已知阻塞是 npm 登录及发布权限核实。尚未执行远端写入、正式渠道安装或真实 demo，README 保持原样。登录完成后沿用本次授权继续发布与验证，不重复请求发布许可。
