@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import type { Configuration } from './config.js';
 
 // A per-attempt transport, not the management socket. Only this role's tools exist here.
-export async function serveRoleTools(directory:string, tools:NonNullable<Configuration['tools']>, attemptId:string, actualSha:string, saveError:(error:string)=>void) {
+export async function serveRoleTools(directory:string, tools:NonNullable<Configuration['tools']>, attemptId:string, actualSha:string, saveError:(error:string)=>void, redact:(text:string)=>string=text=>text) {
   await mkdir(directory,{mode:0o700});
   const artifacts=join(directory,'..','artifacts');await mkdir(artifacts,{mode:0o700});
   await writeFile(join(artifacts,'observations.jsonl'),'');
@@ -33,7 +33,7 @@ try {
       try {result=JSON.parse(JSON.stringify(await tool.read!(message.input)));}catch {error='Read-only tool failed; evidence unavailable';}
       // Save before delivery: model text is not a substitute for an observed result.
       // Serialize whole JSONL records, not reads: large appendFile calls can interleave.
-      const observation=JSON.stringify({attemptId,actualSha,observedAt:new Date().toISOString(),tool:tool.id,input:message.input,...(error?{error}:{result})})+'\n';
+      const observation=redact(JSON.stringify({attemptId,actualSha,observedAt:new Date().toISOString(),tool:tool.id,input:message.input,...(error?{error}:{result})}))+'\n';
       const saved=observationWrites.then(async()=>{
         if(observationCorrupt)throw Error('Observation rollback failed');
         // Roll back only this opened regular file, never a replacement at its path.
@@ -54,7 +54,7 @@ try {
       catch {const message='Tool observation could not be saved; result not delivered';saveError(message);throw Error(message);}
       if(error)throw Error(error);
       res.end(JSON.stringify(result));
-    }catch(error){res.statusCode=400;res.end(JSON.stringify({error:error instanceof Error?error.message:'Tool operation failed'}));}
+    }catch(error){res.statusCode=400;res.end(JSON.stringify({error:redact(error instanceof Error?error.message:'Tool operation failed')}));}
     })();
     handlers.add(handling);
     void handling.then(()=>handlers.delete(handling),()=>handlers.delete(handling));

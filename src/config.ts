@@ -3,6 +3,7 @@ import { resolve } from 'node:path';
 import { tsImport } from 'tsx/esm/api';
 import { z, type ZodObject } from 'zod';
 import type { AgentProvider } from '@ai-hero/sandcastle';
+import { validateClaudeConnection, type ClaudeConnection } from './connection.js';
 
 export async function loadConfiguration(path: string): Promise<Configuration> {
   const loaded = await tsImport(pathToFileURL(resolve(path)).href, import.meta.url);
@@ -65,6 +66,10 @@ export async function loadConfiguration(path: string): Promise<Configuration> {
   for(const provider of config.providers ?? []) {
     if(!provider || typeof provider.id!=='string' || !provider.id || providerIds.has(provider.id) || typeof provider.agent?.buildPrintCommand!=='function' || typeof provider.agent?.parseStreamLine!=='function')throw Error('Invalid or duplicate provider');
     if(provider.mcp!==undefined && provider.mcp!=='claude-code')throw Error('Only claude-code MCP provider is supported');
+    if(provider.connection!==undefined) {
+      validateClaudeConnection(provider.connection);
+      if(provider.agent.name!=='claude-code')throw Error('Connection projection requires a Claude Code provider');
+    }
     providerIds.add(provider.id);
   }
   const bindings=new Set<string>();
@@ -147,7 +152,7 @@ export interface Configuration {
   roles?: Role[];
   tools?: {id:string; description:string; capability?:string; publication?:true; inputSchema?:ZodObject; read?(input:unknown): Promise<unknown>}[];
   mcpServices?: McpService[];
-  providers?: {id: string; agent: AgentProvider; mcp?:'claude-code'; configureMcp?(agent: AgentProvider, connections: McpConnection[]): AgentProvider}[];
+  providers?: {id: string; agent: AgentProvider; connection?: ClaudeConnection; mcp?:'claude-code'; configureMcp?(agent: AgentProvider, connections: McpConnection[]): AgentProvider}[];
   roleBindings?: {role: string; provider: string; environment: string; workspace?:'implementation'; attemptDeadlineSeconds?: number; commit(input: unknown): string}[];
   repos: { id: string; location: string; primaryAgentLimit?: number; publication?:{github:string;remote:string;base:string;env?:Record<string,string>} }[];
   environments: { id: string; docker?: { image: string; binary?: string; network?: string; env?: Record<string,string> } }[];

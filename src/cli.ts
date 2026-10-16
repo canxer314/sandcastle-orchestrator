@@ -17,31 +17,18 @@ try {
     console.log(help(positionals[0]));
   } else {
     const values = parsed as Record<string, string | undefined>;
-    const { call, serve } = await import('./control.js');
     const command = positionals[0];
     if (!commands.includes(command)) throw new Error(`Unknown command; use ${commands.slice(0, -1).join(', ')} or ${commands.at(-1)}`);
     if (['show', 'logs', 'artifact', 'cancel', 'confirm-stop', 'resolve', 'retry'].includes(command) && !positionals[1]) throw new Error('Missing identifier');
-    const required = (name: string) => {
-      const value = values[name];
-      if (typeof value !== 'string' || !value) throw new Error(`Missing --${name}`);
-      return value;
-    };
     if (command === 'serve') {
       serving = true;
-      process.on('uncaughtException', error => {
-        serviceLog('service_crash', error);
-        process.exit(1); // Do not continue after an uncaught fault or claim children stopped.
-      });
-      await serve(required('data'), required('config'), values.maintenance);
+      const { runService } = await import('./cli/serve.js');
+      await runService(values);
     } else {
-      if(command==='artifact' && values.offset!==undefined && !/^\d+$/.test(values.offset))throw Error('Invalid --offset');
-      const socket = required('socket');
-      const message = command === 'submit'
-        ? { command, submission: { repo: required('repo'), capability: required('capability'), input: JSON.parse(required('input')), source: required('source'), deduplicationKey: values['deduplication-key'], scheduledAt: values['scheduled-at'] } }
-        : ['pause', 'resume', 'restore-review', 'maintenance'].includes(command) ? {command, target:values.target, source:values.source, reason:values.reason, handling:values.handling, externalResults:values['external-results'], backupPoint:values['backup-point']}
-        : command === 'list' ? { command, repo: values.repo, status: values.status, source: values.source }
-        : { command, id: positionals[1], attempt: values.attempt, ...(['logs','artifact','confirm-stop'].includes(command) && values.call !== undefined ? {call:values.call} : {}), ...(['cancel','confirm-stop','resolve','retry'].includes(command) ? {reason:required('reason'), source:values.source, handling:values.handling, externalResults:values['external-results']} : {}), ...(command === 'artifact' ? { name: required('name'), ...(values.offset!==undefined?{offset:Number(values.offset)}:{}) } : {}) };
-      console.log(JSON.stringify(await call(socket, message)));
+      const result = ['show', 'list', 'logs', 'artifact', 'maintenance'].includes(command)
+        ? await (await import('./cli/queries.js')).query(command, positionals[1], values)
+        : await (await import('./cli/management.js')).manage(command, positionals[1], values);
+      console.log(JSON.stringify(result));
     }
   }
 } catch (error) {

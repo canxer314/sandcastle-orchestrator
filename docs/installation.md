@@ -135,4 +135,6 @@ provider 扩展继续通过 `Configuration.providers` 使用现有 `AgentProvide
 
 最终 `pnpm run typecheck` 通过；`pnpm test` 共 13 个文件通过，221 项通过、20 项真实环境 opt-in 测试跳过。对应 CLI/socket 回归与 6 项包消费测试均通过。
 
+同日将 `master` 的 `f0684e7` 合入 #75 分支，保留 #74 的 query/management/serve 模块拆分、#75 的帮助/版本免配置入口与 tsx loader，以及 #80 的连接投影校验。typecheck 通过；全套 14 个文件、273 项通过、20 项 opt-in 跳过。定向 CLI/socket、安装消费及连接投影共 5 个文件、122 项通过，其中安装消费 7 项。首次并行运行定向与全套时，定向测试的 serve ready 检查在默认约 1 秒窗口超时；全套通过后，原样串行复跑定向测试全部通过，未放宽断言。合并解决的独立静态审查未发现确定回归。
+
 未运行真实 Docker、模型、私人连接、远端 npm/Release 发布或发布后消费核验。资源保留的完整 install/uninstall/换版本生命周期回归由后续票交付，本票不声称已经完成。
