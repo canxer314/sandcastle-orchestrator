@@ -67,3 +67,11 @@
 GitHub API 返回该仓库 push/maintain/admin 权限为 true，`v0.1.0` tag/Release 仍不存在。Docker client/server 均为 29.8.1，演示镜像 `node:22.22-alpine` 已存在，ID 为 `sha256:e58326d0d441090181ac150dc2078d3e2cf6a0d42e809aebba3ef5880935ffdd`；Git 2.53.0 与 `/usr/bin/flock` 可用。候选原件 SHA-256 再次匹配。
 
 当前唯一已知阻塞是 npm 登录及发布权限核实。尚未执行远端写入、正式渠道安装或真实 demo，README 保持原样。登录完成后沿用本次授权继续发布与验证，不重复请求发布许可。
+
+## 登录后发布尝试
+
+2026-10-17 03:28 Asia/Shanghai，用户完成登录，`npm whoami` 确认 `canxer314`，与个人 scope 一致；包 ACL 列表为空，首次包查询仍 E404。候选哈希再核对通过后，按本次授权执行对原始 tgz 的 `npm publish --access public --tag latest --registry=https://registry.npmjs.org --no-browser`。
+
+npm 返回 E403，说明发布要求双重验证或允许 bypass 2FA 的 granular token。随后的账号查询仅记录 name/tfa，结果为 `canxer314` / `false`；未输出或保存凭据。读回 `@canxer314/sandcastle-orchestrator@0.1.0` 仍 E404，未宣称发布成功，也未盲目重试。GitHub Release 尚未创建，首页尚未切换。
+
+当前阻塞更新为 npm 账号未启用 2FA，登录问题已解决。需要用户在 npm 官网完成账号双重验证设置；不由代理创建或扩大 token 权限。后续仍沿用既有发布授权。脱敏账号状态与发布后读回结果保存在 `/tmp/issue-86-published/`。
