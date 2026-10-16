@@ -10,7 +10,7 @@ let serving = false;
 try {
   const { values: parsed, positionals } = parseArgs({
     allowPositionals: true,
-    options: {human: {type: 'boolean'}, json: {type: 'boolean'}, offline: {type: 'boolean'}, help: {type: 'boolean', short: 'h'}, version: {type: 'boolean', short: 'v'}, ...Object.fromEntries(['data', 'config', 'socket', 'repo', 'capability', 'input', 'input-file', 'source', 'status', 'deduplication-key', 'scheduled-at', 'attempt', 'call', 'name', 'reason', 'handling', 'external-results', 'offset', 'target', 'maintenance', 'backup-point'].map(name => [name, { type: 'string' as const }]))},
+    options: {yes: {type: 'boolean'}, human: {type: 'boolean'}, json: {type: 'boolean'}, offline: {type: 'boolean'}, help: {type: 'boolean', short: 'h'}, version: {type: 'boolean', short: 'v'}, ...Object.fromEntries(['data', 'config', 'demo-repo', 'socket', 'repo', 'capability', 'input', 'input-file', 'source', 'status', 'deduplication-key', 'scheduled-at', 'attempt', 'call', 'name', 'reason', 'handling', 'external-results', 'offset', 'target', 'maintenance', 'backup-point'].map(name => [name, { type: 'string' as const }]))},
   });
   if (parsed.version) {
     console.log(JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8')).version);
@@ -22,7 +22,10 @@ try {
     if (!commands.includes(command)) throw new Error(`Unknown command; use ${commands.slice(0, -1).join(', ')} or ${commands.at(-1)}`);
     validateOptions(command, positionals, parsed);
     if (['show', 'logs', 'artifact', 'cancel', 'confirm-stop', 'resolve', 'retry'].includes(command) && !positionals[1] && !(command === 'show' && values.source !== undefined && values['deduplication-key'] !== undefined)) throw new Error('Missing identifier');
-    if (command === 'serve') {
+    if (command === 'init' || command === 'doctor') {
+      const { onboarding } = await import('./cli/onboarding.js');
+      await onboarding(command, parsed);
+    } else if (command === 'serve') {
       serving = true;
       const { runService } = await import('./cli/serve.js');
       await runService(values);
