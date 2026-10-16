@@ -80,18 +80,18 @@ test('help and no-argument discovery need neither configuration nor a service', 
   const data = join(cwd, 'must-not-create');
   await writeFile(config, 'throw new Error("Configuration was executed");');
   const before = await readdir(cwd);
-  const commands = ['serve', 'submit', 'show', 'list', 'logs', 'artifact', 'cancel', 'confirm-stop', 'resolve', 'retry', 'cleanup', 'pause', 'resume', 'maintenance', 'restore-review', 'init', 'doctor'];
+  const commands = ['setup', 'serve', 'submit', 'show', 'list', 'logs', 'artifact', 'cancel', 'confirm-stop', 'resolve', 'retry', 'cleanup', 'pause', 'resume', 'maintenance', 'restore-review', 'init', 'doctor'];
   for (const command of [undefined, ...commands]) {
     const result = await exec(bin, [...(command ? [command] : []), '--help', '--config', config, '--data', data, '--socket', join(data, 'absent.sock')], { cwd });
     expect(result.stderr).toBe('');
     expect(result.stdout).toContain('sandcastle-orchestrator');
     expect(result.stdout).toContain('Example:');
     if (command === 'serve') expect(result.stdout).toContain('--maintenance');
-    if (command && !['serve', 'init', 'doctor'].includes(command)) expect(result.stdout).toContain('--socket');
+    if (command && !['serve', 'setup', 'init', 'doctor'].includes(command)) expect(result.stdout).toContain('--socket');
   }
   const discovery = await exec(bin, [], { cwd });
   for (const command of commands) expect(discovery.stdout).toContain(command);
-  expect(discovery.stdout).toMatch(/demo.*setup.*unreleased/i);
+  expect(discovery.stdout).toMatch(/demo.*unreleased/i);
   expect(await readdir(cwd)).toEqual(before);
 });
 
@@ -100,7 +100,7 @@ test('unknown commands retain JSON errors and cannot match inherited object prop
     await expect(exec(bin, [command], { cwd })).rejects.toMatchObject({
       code: 1,
       stdout: '',
-      stderr: `${JSON.stringify({ error: 'Unknown command; use serve, submit, show, list, logs, artifact, cancel, confirm-stop, resolve, retry, cleanup, pause, resume, maintenance, restore-review, init or doctor' })}\n`,
+      stderr: `${JSON.stringify({ error: 'Unknown command; use setup, serve, submit, show, list, logs, artifact, cancel, confirm-stop, resolve, retry, cleanup, pause, resume, maintenance, restore-review, init or doctor' })}\n`,
     });
     await expect(exec(bin, [command, '--help'], { cwd })).rejects.toMatchObject({
       code: 1,
@@ -410,3 +410,37 @@ exit 1
   expect(logs).toMatchObject({complete:true, stdout:'packaged-test\n', stderr:'controlled-stderr\n'});
   await stop(child);
 }, 30_000);
+
+
+test('installed setup generates consumable external config with inherited model and explicit file submission', async () => {
+  const repo = join(directory, 'setup-project'); const home = join(directory, 'setup-home');
+  await mkdir(repo); await mkdir(home);
+  await exec('git', ['init', '-q', repo], {cwd});
+  await writeFile(join(repo, 'README.md'), '# Package setup fixture\n');
+  await exec('git', ['-C', repo, 'add', '.'], {cwd});
+  await exec('git', ['-C', repo, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'fixture'], {cwd});
+  const sha = (await exec('git', ['-C', repo, 'rev-parse', 'HEAD'], {cwd})).stdout.trim();
+  const generated = await exec(bin, ['setup', '--project', repo, '--yes', '--json', '--connection-environment'], {cwd, env: {...process.env, HOME: home}});
+  const setup = JSON.parse(generated.stdout);
+  expect(setup.project.sha).toBe(sha);
+  expect(setup.commands.serve).toContain(setup.paths.config);
+  expect(setup.commands.submit).toContain('--input-file');
+  const config = await readFile(setup.paths.config, 'utf8');
+  expect(config).toContain(new URL('dist/index.js', `file://${installed}/`).href);
+  expect(config).not.toContain(root);
+  const child = spawn(bin, ['serve', '--config', setup.paths.config, '--data', setup.paths.data, '--maintenance', 'paused'], {cwd});
+  children.add(child); let errors = '';
+  child.stderr!.on('data', chunk => errors += chunk);
+  await new Promise<void>((done, reject) => {
+    const timer = setTimeout(() => reject(Error(errors || 'not ready')), 10000);
+    child.stdout!.on('data', chunk => {if (String(chunk).includes('ready')) {clearTimeout(timer); done();}});
+    child.once('exit', () => {clearTimeout(timer); reject(Error(errors));});
+  });
+  await exec(bin, ['resume', '--data', setup.paths.data, '--target', 'admission', '--source', 'package-setup', '--reason', 'validate admission only', '--json'], {cwd});
+  // Starts remain paused: no real connections or Docker.
+  const receipt = JSON.parse((await exec(bin, ['submit', '--data', setup.paths.data, '--repo', setup.repo, '--capability', setup.role, '--source', 'package-setup', '--input-file', setup.paths.input, '--json'], {cwd})).stdout);
+  expect(receipt.accepted).toBe(true);
+  const detail = JSON.parse((await exec(bin, ['show', receipt.executionId, '--data', setup.paths.data], {cwd})).stdout);
+  expect(detail).toMatchObject({request: {input: {commit: sha, question: '说明这个项目的主要模块及调用关系'}}, execution: {status: 'queued'}, attempts: []});
+  await stop(child);
+}, 20000);

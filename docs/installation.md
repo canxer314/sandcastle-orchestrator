@@ -27,7 +27,7 @@ sandcastle-orchestrator --help
 sandcastle-orchestrator serve --help
 ```
 
-正式命令固定为 `sandcastle-orchestrator`，不会覆盖依赖已有的 `sandcastle` 命令。`--version` 只输出产物版本。无参数、根帮助和子命令帮助不加载配置、不连接 socket，也不创建数据目录。`init` 和 `doctor` 已可使用，见下节；`demo`、`setup` 和 `init --reset-demo` 尚不可用。上述命令状态以本地构建产物为准，不表示已经发布。
+正式命令固定为 `sandcastle-orchestrator`，不会覆盖依赖已有的 `sandcastle` 命令。`--version` 只输出产物版本。无参数、根帮助和子命令帮助不加载配置、不连接 socket，也不创建数据目录。`init` 和 `doctor` 已可使用，见下节；`setup` 可生成真实项目只读问答入口，见 [setup 指南](setup.md)；`demo` 和 `init --reset-demo` 尚不可用。上述命令状态以本地构建产物为准，不表示已经发布。
 
 远端发布需另行授权。完成包名、scope、public 权限及发布后消费核验后，主渠道将是 `npm install --global @canxer314/sandcastle-orchestrator`；固定版本使用 `npm install --global @canxer314/sandcastle-orchestrator@VERSION`，备选是在 Release 下载同一 tgz 后按上面安装。`VERSION` 不是可直接运行的版本号。npm 与 Release 必须使用同一份已验收产物，不重新打包；registry 404 不证明有发布权限。npx 仅用于临时体验，不作为常驻部署方式。
 
@@ -126,7 +126,7 @@ export default {
 sandcastle-orchestrator serve --config "$CONFIG/config.ts" --data "$DATA"
 ```
 
-provider 扩展继续通过 `Configuration.providers` 使用现有 `AgentProvider` 契约；如果配置 import `@ai-hero/sandcastle` 的 provider，需在配置项目显式安装兼容版本 `@ai-hero/sandcastle@0.12.0`。MCP helper 只在对应 harness 支持时使用，不改变 provider 选择或连接。真实 execution、role binding、镜像与授权策略仍由管理员准备，本票不增加自动 setup。
+provider 扩展继续通过 `Configuration.providers` 使用现有 `AgentProvider` 契约；如果配置 import `@ai-hero/sandcastle` 的 provider，需在配置项目显式安装兼容版本 `@ai-hero/sandcastle@0.12.0`。MCP helper 只在对应 harness 支持时使用，不改变 provider 选择或连接。高级 execution、role binding、镜像与授权策略仍由管理员准备；只读问答可由显式 `setup` 生成参考配置，但不会自动执行。
 
 排障时先检查 `node --version`、配置目录的 `package.json`、自身 `node_modules`、文件名和相对 import 路径。`Cannot find package`/TS2307 通常表示配置自己的依赖未装，不能靠全局 CLI 的 node_modules 解决。`service_failure` 故意不输出任意配置异常和堆栈，防止凭据泄漏；先对配置运行上述类型检查，再在受控环境检查可信配置的 import 和定义。不要把环境变量、token 或含凭据的堆栈贴到日志/Issue。`separate` 错误需要调整目录布局，不能删除锁或绕过真实路径检查。
 
