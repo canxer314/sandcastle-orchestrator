@@ -22,7 +22,7 @@ HTTP loopback uses existing execution bridge facilities only in supported enviro
 Paths must be new and physically separate from application/project/demo; existing resources are not overwritten.
 --reference-only creates reference files for manual merge, never loads/rewrites config or creates/modifies data.
 Dirty changes are excluded; no clone/fetch/commit/branch switch, Docker, model, service or submit is run.
-Default image: sandcastle-orchestrator-claude:2.1.296. Build/preparation and acceptance limits: docs/setup.md.
+Default image: sandcastle-orchestrator-claude:2.1.296. Build/preparation and acceptance limits: docs/user-guide.md.
 Example: sandcastle-orchestrator setup --project /srv/project --connection-environment --yes --json`,
   serve: `serve --data DIR --config FILE [--maintenance normal|paused|restore]
 Start the control service explicitly; stdout emits ready JSON, stderr contains service logs.

@@ -212,7 +212,7 @@ export async function demo(values: Record<string, unknown>) {
     }
     if (result.data) {
       result.inspect = queryCommand('show', {id:result.executionId, source, deduplicationKey:runId, data:result.data, offline:true});
-      result.instructions = 'Inspect retained records and service/attempt logs. Verify container and capability stop independently before using confirm-stop/resolve. Never start serve merely to inspect evidence or resend an uncertain submission. See docs/demo.md for journal reconciliation.';
+      result.instructions = 'Inspect retained records and service/attempt logs. Verify container and capability stop independently before using confirm-stop/resolve. Never start serve merely to inspect evidence or resend an uncertain submission. See docs/installation.md for journal reconciliation.';
     }
     try {
       await serviceLog?.appendFile(`\nDemo client result: ${JSON.stringify(result)}\n`);

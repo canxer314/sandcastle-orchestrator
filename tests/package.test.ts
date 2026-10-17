@@ -722,15 +722,34 @@ test('installed setup generates consumable external config with inherited model 
   await stop(child);
 }, 20000);
 
-test('installed candidate includes the complete user guide and role tutorial', async () => {
-  for (const path of ['README.md', ...(await readdir(join(installed, 'docs'))).filter(name => name.endsWith('.md')).map(name => `docs/${name}`)]) {
+test('installed candidate includes exactly five task guides and maintainer instructions', async () => {
+  const guides = ['deployment-guide.md', 'installation.md', 'queries.md', 'readonly-role-tutorial.md', 'user-guide.md'];
+  expect((await readdir(join(installed, 'docs'))).sort()).toEqual(guides);
+  const readme = await readFile(join(installed, 'README.md'), 'utf8');
+  for (const guide of guides) expect(readme).toContain(`](docs/${guide})`);
+  expect(await readFile(join(installed, 'CONTRIBUTING.md'), 'utf8')).toContain('npm publish');
+  for (const path of ['README.md', 'CONTRIBUTING.md', ...guides.map(name => `docs/${name}`)]) {
     const document = await readFile(join(installed, path), 'utf8');
+    expect(document).not.toMatch(/<a\s+id=/);
     for (const [, target] of document.matchAll(/\]\(([^)]+)\)/g)) {
-      if (target!.includes('://') || target!.startsWith('#')) continue;
-      await expect(stat(resolve(installed, path, '..', target!.split('#')[0]!)), `${path}: ${target}`).resolves.toBeDefined();
+      if (target!.includes('://')) continue;
+      const [file, fragment] = target!.split('#');
+      const destination = file ? resolve(installed, path, '..', decodeURIComponent(file)) : join(installed, path);
+      await expect(stat(destination), `${path}: ${target}`).resolves.toBeDefined();
+      if (fragment && destination.endsWith('.md')) {
+        const source = (await readFile(destination, 'utf8')).replace(/^```.*?^```\s*$/gms, '');
+        const seen = new Map<string, number>();
+        const anchors = [...source.matchAll(/^#{1,6}\s+(.+?)\s*#*$/gm)].map(([, heading]) => {
+          const slug = heading!.replace(/\[([^\]]+)\]\([^)]+\)/g, '$1').replace(/`/g, '').toLowerCase().replace(/[^\p{L}\p{N}_ -]/gu, '').replace(/ /g, '-');
+          const count = seen.get(slug) ?? 0;
+          seen.set(slug, count + 1);
+          return count ? `${slug}-${count}` : slug;
+        });
+        expect(anchors, `${path}: ${target}`).toContain(decodeURIComponent(fragment));
+      }
     }
   }
-  for (const path of ['docs/user-guide.md', 'docs/deployment-guide.md', 'docs/queries.md', 'docs/submissions.md', 'docs/readonly-role-tutorial.md', 'examples/readonly-role/config.ts', 'examples/readonly-role/composition.ts']) {
+  for (const path of ['docs/user-guide.md', 'docs/deployment-guide.md', 'docs/queries.md', 'docs/installation.md', 'docs/readonly-role-tutorial.md', 'examples/readonly-role/config.ts', 'examples/readonly-role/composition.ts']) {
     expect(packed.files.map(file => file.path)).toContain(path);
     expect(await readFile(join(installed, path), 'utf8')).not.toBe('');
   }
