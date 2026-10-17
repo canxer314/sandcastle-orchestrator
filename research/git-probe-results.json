@@ -1,0 +1,51 @@
+{
+  "scope": "Synthetic local Git probe only; no Docker, model, credential or external remote operation; not application acceptance",
+  "git_version": "git version 2.53.0",
+  "directory": "/tmp/issue-114-git-probe-03835uzy",
+  "base_sha": "d03b5c3ec3afc809206be868eba020fd0ce47207",
+  "agent_sha": "35c59cd2b4f2a9553f5a1aa8b5792f291a593048",
+  "published_sha": "a863c99afa59294c92944e3139b7c6b44deb96ee",
+  "published_tree": "0115bedc5445a85836c1183a33c46742fe604786",
+  "checks": [
+    {
+      "check": "uncommitted change in A is absent from B",
+      "passed": true
+    },
+    {
+      "check": "local commit in A is absent from independent B",
+      "passed": true
+    },
+    {
+      "check": "publication into remote fixture does not update configured repo",
+      "passed": true
+    },
+    {
+      "check": "publication also does not update already created B",
+      "passed": true
+    },
+    {
+      "check": "fresh authorized source contains published commit",
+      "passed": true
+    },
+    {
+      "check": "object existing only without an advertised head is not guaranteed in next clone",
+      "passed": true
+    },
+    {
+      "check": "independent downstream reads exact published result without worktree sharing",
+      "passed": true
+    },
+    {
+      "check": "downstream has independent git directory",
+      "passed": true
+    },
+    {
+      "check": "tree identifier cannot be supplied as commit SHA",
+      "passed": true
+    },
+    {
+      "check": "choosing one predecessor commit does not combine another predecessor result",
+      "passed": true
+    }
+  ]
+}
