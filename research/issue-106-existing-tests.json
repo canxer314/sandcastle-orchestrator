@@ -1,0 +1,10 @@
+{
+  "source_commit": "a8bd3fcae668c47d2388e3aabce94a7207586a09",
+  "command": "pnpm exec vitest run tests/roles.test.ts tests/quota.test.ts -t 'explicit (valid|invalid|nonzero|missing-exit) report/end contract|native provider MCP configuration exposes unknown|oldest eligible primary agents|startup scans queued work'",
+  "result": {
+    "files_passed": 2,
+    "tests_passed": 7,
+    "tests_skipped": 32
+  },
+  "scope": "Existing controlled-adapter regression tests, not newly implemented task dependency behavior; no real model or container calls."
+}

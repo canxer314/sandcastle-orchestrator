@@ -1,0 +1,12 @@
+Node v24.21.0; standalone SQLite state model; no product runtime
+PASS 1: A -> B 与独立 C：只在 A 显式成功后领取 B
+PASS 2: 未选前置不启动；后来明确选择 A 才绑定并执行
+PASS 3: 多前置 AND：A 与 C 都成功才放行 B
+PASS 4: 进程退出码 0，无业务结论，B 仍等待
+PASS 5: 最终失败只阻塞 B 及其后代 D；独立 C 仍可领取
+PASS 6: 任务内重试不是最终失败；旧 execution 迟到报告无效
+PASS 7: 重复完成回同一结果；事件冲突/终态改写不能二次领取 B
+PASS 8: 结论提交后、调度前重开数据库：重算 B 就绪，去重记录仍在
+PASS 9: 无结论退出后重开数据库：不会补造成功
+PASS 10: 环和不存在的前置引用被拒绝
+10/10 passed. Database reopen is not crash/harness/exactly-once acceptance.
